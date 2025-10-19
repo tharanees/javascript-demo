@@ -1,0 +1,42 @@
+import AppBar from '@mui/material/AppBar';
+import Box from '@mui/material/Box';
+import Stack from '@mui/material/Stack';
+import Toolbar from '@mui/material/Toolbar';
+import Typography from '@mui/material/Typography';
+import CircularProgress from '@mui/material/CircularProgress';
+import Chip from '@mui/material/Chip';
+
+function formatTimestamp(timestamp) {
+  if (!timestamp) {
+    return 'N/A';
+  }
+  return new Date(timestamp).toLocaleTimeString();
+}
+
+export function Header({ status, lastUpdated }) {
+  const statusColor = {
+    connected: 'success',
+    connecting: 'warning',
+    disconnected: 'default',
+    error: 'error',
+  }[status] || 'default';
+
+  return (
+    <AppBar position="sticky" color="transparent" elevation={0} sx={{ backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(148,163,184,0.2)' }}>
+      <Toolbar sx={{ justifyContent: 'space-between' }}>
+        <Stack direction="row" spacing={2} alignItems="center">
+          <Typography variant="h5" fontWeight={700} color="primary.light">
+            Crypto Pulse
+          </Typography>
+          <Chip label={`Status: ${status}`} color={statusColor} variant="outlined" size="small" />
+        </Stack>
+        <Box display="flex" alignItems="center" gap={1}>
+          <CircularProgress size={18} thickness={6} />
+          <Typography variant="body2" color="text.secondary">
+            Updated {formatTimestamp(lastUpdated)}
+          </Typography>
+        </Box>
+      </Toolbar>
+    </AppBar>
+  );
+}

@@ -1,0 +1,106 @@
+import { useEffect } from 'react';
+import { useQuery } from '@apollo/client';
+import CssBaseline from '@mui/material/CssBaseline';
+import Container from '@mui/material/Container';
+import Grid from '@mui/material/Grid2';
+import Stack from '@mui/material/Stack';
+import Typography from '@mui/material/Typography';
+import { createTheme, ThemeProvider } from '@mui/material/styles';
+import Skeleton from '@mui/material/Skeleton';
+
+import { Header } from './components/Header.jsx';
+import { SummaryCards } from './components/SummaryCards.jsx';
+import { MarketMovers } from './components/MarketMovers.jsx';
+import { ChangeDistributionChart } from './components/ChangeDistributionChart.jsx';
+import { DominancePie } from './components/DominancePie.jsx';
+import { VelocityGauge } from './components/VelocityGauge.jsx';
+import { AssetTable } from './components/AssetTable.jsx';
+import { LiveTicker } from './components/LiveTicker.jsx';
+import { useLiveAssets } from './hooks/useLiveAssets.js';
+import { DASHBOARD_QUERY } from './graphql/queries.js';
+
+const theme = createTheme({
+  palette: {
+    mode: 'dark',
+    background: {
+      default: '#0f172a',
+      paper: 'rgba(15,23,42,0.6)',
+    },
+    primary: {
+      main: '#38bdf8',
+      light: '#a855f7',
+    },
+  },
+  typography: {
+    fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  },
+});
+
+export default function App() {
+  const live = useLiveAssets();
+  const { data, loading, refetch } = useQuery(DASHBOARD_QUERY, {
+    variables: { assetLimit: 5 },
+    pollInterval: 60000,
+  });
+
+  useEffect(() => {
+    if (live.status === 'connected') {
+      refetch();
+    }
+  }, [live.status, refetch]);
+
+  const summary = data?.marketSummary;
+  const movers = data?.topMovers;
+  const distribution = data?.changeDistribution ?? [];
+  const dominance = data?.dominance ?? [];
+  const velocity = data?.velocity;
+
+  return (
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Header status={live.status} lastUpdated={live.lastUpdated} />
+      <Container maxWidth="xl" sx={{ py: 4 }}>
+        <LiveTicker assets={live.assets} />
+        <SummaryCards summary={summary} />
+        <Grid container spacing={3} sx={{ mt: 1 }}>
+          <Grid size={{ xs: 12, lg: 4 }}>
+            {loading && !movers ? (
+              <Skeleton variant="rounded" height={360} />
+            ) : (
+              <MarketMovers movers={movers} />
+            )}
+          </Grid>
+          <Grid size={{ xs: 12, lg: 4 }}>
+            {loading && !distribution.length ? (
+              <Skeleton variant="rounded" height={360} />
+            ) : (
+              <ChangeDistributionChart data={distribution} />
+            )}
+          </Grid>
+          <Grid size={{ xs: 12, lg: 4 }}>
+            {loading && !dominance.length ? (
+              <Skeleton variant="rounded" height={360} />
+            ) : (
+              <DominancePie data={dominance} />
+            )}
+          </Grid>
+          <Grid size={{ xs: 12, lg: 4 }}>
+            {loading && !velocity ? (
+              <Skeleton variant="rounded" height={320} />
+            ) : (
+              <VelocityGauge metric={velocity} />
+            )}
+          </Grid>
+          <Grid size={{ xs: 12 }}>
+            <AssetTable rows={live.assets} />
+          </Grid>
+        </Grid>
+        <Stack direction="row" justifyContent="flex-end" mt={4}>
+          <Typography variant="caption" color="text.secondary">
+            Powered by CoinCap.io public dataset
+          </Typography>
+        </Stack>
+      </Container>
+    </ThemeProvider>
+  );
+}
