@@ -1,22 +1,28 @@
 const dataService = require('./dataService');
 
 const toFixedNumber = (value, digits = 2) => {
-  const parsed = Number.parseFloat(value);
-  if (!Number.isFinite(parsed)) {
+  if (!Number.isFinite(value)) {
     return 0;
   }
-  return Number.parseFloat(parsed.toFixed(digits));
+  return Number.parseFloat(value.toFixed(digits));
 };
 
 function getMarketSummary() {
   const assets = dataService.getAssets();
-  const totalMarketCap = assets.reduce((sum, asset) => sum + asset.marketCapUsd, 0);
-  const totalVolume = assets.reduce((sum, asset) => sum + asset.volumeUsd24Hr, 0);
-  const averageChange = assets.length
-    ? assets.reduce((sum, asset) => sum + asset.changePercent24Hr, 0) / assets.length
+  const totalMarketCap = assets.reduce(
+    (sum, asset) => (Number.isFinite(asset.marketCapUsd) ? sum + asset.marketCapUsd : sum),
+    0,
+  );
+  const totalVolume = assets.reduce(
+    (sum, asset) => (Number.isFinite(asset.volumeUsd24Hr) ? sum + asset.volumeUsd24Hr : sum),
+    0,
+  );
+  const assetsWithChange = assets.filter((asset) => Number.isFinite(asset.changePercent24Hr));
+  const averageChange = assetsWithChange.length
+    ? assetsWithChange.reduce((sum, asset) => sum + asset.changePercent24Hr, 0) / assetsWithChange.length
     : 0;
-  const positiveChangeCount = assets.filter((asset) => asset.changePercent24Hr >= 0).length;
-  const negativeChangeCount = assets.length - positiveChangeCount;
+  const positiveChangeCount = assetsWithChange.filter((asset) => asset.changePercent24Hr >= 0).length;
+  const negativeChangeCount = assetsWithChange.length - positiveChangeCount;
 
   return {
     totalMarketCapUsd: toFixedNumber(totalMarketCap, 0),
@@ -31,11 +37,13 @@ function getMarketSummary() {
 }
 
 function getTopMovers(limit = 5) {
-  const assets = dataService.getAssets();
-  const sorted = [...assets].sort((a, b) => b.changePercent24Hr - a.changePercent24Hr);
+  const assets = dataService
+    .getAssets()
+    .filter((asset) => Number.isFinite(asset.changePercent24Hr));
+  const sorted = [...assets].sort((a, b) => a.changePercent24Hr - b.changePercent24Hr);
   return {
-    gainers: sorted.slice(0, limit),
-    losers: sorted.slice(-limit).reverse(),
+    gainers: sorted.slice(-limit).reverse(),
+    losers: sorted.slice(0, limit),
   };
 }
 
@@ -52,7 +60,12 @@ function getChangeDistribution() {
   const assets = dataService.getAssets();
   const distribution = buckets.map((bucket) => ({
     label: bucket.label,
-    count: assets.filter((asset) => asset.changePercent24Hr >= bucket.min && asset.changePercent24Hr < bucket.max).length,
+    count: assets.filter(
+      (asset) =>
+        Number.isFinite(asset.changePercent24Hr) &&
+        asset.changePercent24Hr >= bucket.min &&
+        asset.changePercent24Hr < bucket.max,
+    ).length,
   }));
 
   return distribution;
@@ -68,6 +81,10 @@ function getDominance(limit = 6) {
     if (seen.has(key)) {
       continue;
     }
+    if (!Number.isFinite(asset.marketCapUsd) || asset.marketCapUsd <= 0) {
+      continue;
+    }
+
     seen.add(key);
     uniqueByBase.push(asset);
     if (uniqueByBase.length >= limit) {
@@ -75,7 +92,10 @@ function getDominance(limit = 6) {
     }
   }
 
-  const totalMarketCap = uniqueByBase.reduce((sum, asset) => sum + asset.marketCapUsd, 0);
+  const totalMarketCap = uniqueByBase.reduce(
+    (sum, asset) => (Number.isFinite(asset.marketCapUsd) ? sum + asset.marketCapUsd : sum),
+    0,
+  );
   if (!totalMarketCap) {
     return [];
   }
@@ -95,17 +115,23 @@ function getVelocityMetrics() {
     .map((history) => {
       const latest = history[history.length - 1];
       const previous = history[history.length - 2];
+      if (!Number.isFinite(latest.priceUsd) || !Number.isFinite(previous.priceUsd)) {
+        return null;
+      }
+
       const delta = latest.priceUsd - previous.priceUsd;
-      return Math.abs(delta / (previous.priceUsd || 1));
+      const baseline = previous.priceUsd === 0 ? null : Math.abs(delta / previous.priceUsd);
+      return Number.isFinite(baseline) ? baseline : null;
     });
 
-  const averageVelocity = historySamples.length
-    ? (historySamples.reduce((sum, value) => sum + value, 0) / historySamples.length) * 100
+  const numericSamples = historySamples.filter((value) => Number.isFinite(value));
+  const averageVelocity = numericSamples.length
+    ? (numericSamples.reduce((sum, value) => sum + value, 0) / numericSamples.length) * 100
     : 0;
 
   return {
     averageVelocityPercent: toFixedNumber(averageVelocity, 2),
-    sampleSize: historySamples.length,
+    sampleSize: numericSamples.length,
   };
 }
 

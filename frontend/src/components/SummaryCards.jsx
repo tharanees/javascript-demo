@@ -40,6 +40,19 @@ const cards = [
 ];
 
 export function SummaryCards({ summary }) {
+  const resolveValue = (card) => {
+    if (!summary) {
+      return '—';
+    }
+
+    const value = summary[card.key];
+    if (!Number.isFinite(value)) {
+      return '—';
+    }
+
+    return card.formatter(value);
+  };
+
   return (
     <Grid container spacing={3} sx={{ mt: 2 }}>
       {cards.map((card) => (
@@ -53,7 +66,7 @@ export function SummaryCards({ summary }) {
                     {card.title}
                   </Typography>
                   <Typography variant="h5" fontWeight={700} color="text.primary">
-                    {summary ? card.formatter(summary[card.key] || 0) : '--'}
+                    {resolveValue(card)}
                   </Typography>
                 </Stack>
               </Stack>

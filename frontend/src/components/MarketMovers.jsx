@@ -12,39 +12,86 @@ const currencyFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
+const coerceNumber = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalised = trimmed.replace(/,/g, '');
+    const parsed = Number.parseFloat(normalised);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const formatPrice = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '—' : currencyFormatter.format(numeric);
+};
+
+const resolveChipVisuals = (value, accentColor) => {
+  const numeric = coerceNumber(value);
+  if (numeric === null) {
+    return {
+      label: '—',
+      backgroundColor: 'rgba(148,163,184,0.25)',
+      color: 'rgba(226,232,240,0.85)',
+    };
+  }
+
+  return {
+    label: `${numeric.toFixed(2)}%`,
+    backgroundColor: accentColor,
+    color: '#0f172a',
+  };
+};
+
 function MoversList({ title, data, color }) {
+  const filtered = data.filter(
+    (asset) => Number.isFinite(coerceNumber(asset.changePercent24Hr)) || Number.isFinite(coerceNumber(asset.priceUsd)),
+  );
+
   return (
     <Stack spacing={2}>
       <Typography variant="subtitle2" color="text.secondary" textTransform="uppercase">
         {title}
       </Typography>
       <Stack spacing={1.5}>
-        {data.map((asset) => (
-          <Stack key={asset.id} direction="row" justifyContent="space-between" alignItems="center">
-            <Stack spacing={0.3}>
-              <Typography variant="body1" fontWeight={600} color="text.primary">
-                {asset.symbol}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                {asset.name}
-              </Typography>
+        {filtered.map((asset) => {
+          const chipVisuals = resolveChipVisuals(asset.changePercent24Hr, color);
+          return (
+            <Stack key={asset.id} direction="row" justifyContent="space-between" alignItems="center">
+              <Stack spacing={0.3}>
+                <Typography variant="body1" fontWeight={600} color="text.primary">
+                  {asset.symbol}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {asset.name}
+                </Typography>
+              </Stack>
+              <Stack spacing={0.5} alignItems="flex-end">
+                <Typography variant="body2" color="text.secondary">
+                  {formatPrice(asset.priceUsd)}
+                </Typography>
+                <Chip
+                  label={chipVisuals.label}
+                  size="small"
+                  sx={{
+                    backgroundColor: chipVisuals.backgroundColor,
+                    color: chipVisuals.color,
+                    fontWeight: 700,
+                  }}
+                />
+              </Stack>
             </Stack>
-            <Stack spacing={0.5} alignItems="flex-end">
-              <Typography variant="body2" color="text.secondary">
-                {currencyFormatter.format(asset.priceUsd)}
-              </Typography>
-              <Chip
-                label={`${asset.changePercent24Hr.toFixed(2)}%`}
-                size="small"
-                sx={{
-                  backgroundColor: color,
-                  color: '#0f172a',
-                  fontWeight: 700,
-                }}
-              />
-            </Stack>
-          </Stack>
-        ))}
+          );
+        })}
       </Stack>
     </Stack>
   );

@@ -12,11 +12,11 @@ const percentFormatter = new Intl.NumberFormat('en-US', {
 const numberFormatter = new Intl.NumberFormat('en-US');
 
 export function VelocityGauge({ metric }) {
-  const rawValue = metric?.averageVelocityPercent ?? 0;
-  const clampedValue = Math.max(0, Math.min(rawValue, 100));
-  const formattedValue = percentFormatter.format(rawValue / 100);
-  const sampleSizeLabel = numberFormatter.format(metric?.sampleSize ?? 0);
-  const data = [{ name: 'velocity', value: clampedValue, fill: 'url(#velocityGradient)' }];
+  const rawValue = Number.isFinite(metric?.averageVelocityPercent) ? metric.averageVelocityPercent : null;
+  const gaugeValue = rawValue === null ? 0 : Math.max(0, Math.min(rawValue, 100));
+  const formattedValue = rawValue === null ? '—' : percentFormatter.format(rawValue / 100);
+  const sampleSizeLabel = Number.isFinite(metric?.sampleSize) ? numberFormatter.format(metric.sampleSize) : '—';
+  const data = [{ name: 'velocity', value: gaugeValue, fill: 'url(#velocityGradient)' }];
 
   return (
     <Card sx={{ backgroundColor: 'rgba(15,23,42,0.6)', borderRadius: 3, border: '1px solid rgba(148,163,184,0.2)', height: '100%' }}>

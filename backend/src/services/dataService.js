@@ -5,9 +5,28 @@ const seedAssets = require('../data/seedAssets.json');
 
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
 
-const parseFloatSafe = (value) => {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+const toNumeric = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalised = trimmed.replace(/,/g, '');
+    const parsed = Number.parseFloat(normalised);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 };
 
 class DataService extends EventEmitter {
@@ -78,6 +97,10 @@ class DataService extends EventEmitter {
     if (assetPayload.length) {
       assetPayload.forEach((asset, index) => {
         const normalized = this.normalizeAsset({ ...asset, rank: asset.rank ?? index + 1 }, timestamp);
+        if (!Number.isFinite(normalized.priceUsd)) {
+          return;
+        }
+
         this.assetMap.set(normalized.id, normalized);
         this.appendHistory(normalized.id, {
           timestamp,
@@ -123,16 +146,27 @@ class DataService extends EventEmitter {
         return;
       }
 
-      if (currentPriority === existingPriority && asset.volumeUsd24Hr > existing.asset.volumeUsd24Hr) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
+      if (currentPriority === existingPriority) {
+        const existingVolume = Number.isFinite(existing.asset.volumeUsd24Hr)
+          ? existing.asset.volumeUsd24Hr
+          : 0;
+        const candidateVolume = Number.isFinite(asset.volumeUsd24Hr) ? asset.volumeUsd24Hr : 0;
+
+        if (candidateVolume > existingVolume) {
+          groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
+        }
       }
     });
 
     const enriched = Array.from(groupedByBase.values()).map(({ asset }) => asset);
 
     enriched.sort((a, b) => {
-      const aMetric = a.marketCapUsd > 0 ? a.marketCapUsd : a.volumeUsd24Hr;
-      const bMetric = b.marketCapUsd > 0 ? b.marketCapUsd : b.volumeUsd24Hr;
+      const aMarketCap = Number.isFinite(a.marketCapUsd) ? a.marketCapUsd : null;
+      const bMarketCap = Number.isFinite(b.marketCapUsd) ? b.marketCapUsd : null;
+      const aVolume = Number.isFinite(a.volumeUsd24Hr) ? a.volumeUsd24Hr : 0;
+      const bVolume = Number.isFinite(b.volumeUsd24Hr) ? b.volumeUsd24Hr : 0;
+      const aMetric = aMarketCap && aMarketCap > 0 ? aMarketCap : aVolume;
+      const bMetric = bMarketCap && bMarketCap > 0 ? bMarketCap : bVolume;
       return bMetric - aMetric;
     });
 
@@ -146,21 +180,25 @@ class DataService extends EventEmitter {
     const baseAsset = product?.b ?? product?.baseAsset;
     const quoteAsset = product?.q ?? product?.quoteAsset;
 
-    const priceUsd = parseFloatSafe(product?.c ?? product?.closePrice);
-    const changePercent = parseFloatSafe(product?.P ?? product?.priceChangePercent);
-    const quoteVolume = parseFloatSafe(product?.qv ?? product?.quoteVolume ?? product?.q);
-    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? 0);
-    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply);
-    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply) || supply;
+    const priceUsd = toNumeric(product?.c ?? product?.closePrice);
+    const changePercent = toNumeric(product?.P ?? product?.priceChangePercent);
+    const quoteVolume = toNumeric(product?.qv ?? product?.quoteVolume ?? product?.q);
+    const baseVolume = toNumeric(product?.v ?? product?.volume);
+    const supply = toNumeric(product?.cs ?? product?.circulatingSupply);
+    const maxSupply = toNumeric(product?.ms ?? product?.maxSupply) ?? supply;
 
-    if (!priceUsd) {
+    if (!Number.isFinite(priceUsd) || priceUsd <= 0) {
       return null;
     }
 
     const displayName = product?.an || product?.assetName || `${baseAsset}/${quoteAsset}`;
-    const marketCapFromSupply = supply > 0 ? priceUsd * supply : 0;
-    const marketCapUsd = marketCapFromSupply || parseFloatSafe(product?.marketCap) || quoteVolume;
-    const vwap24Hr = baseVolume > 0 && quoteVolume > 0 ? quoteVolume / baseVolume : priceUsd;
+    const marketCapFromSupply = Number.isFinite(supply) && supply > 0 ? priceUsd * supply : null;
+    const fallbackMarketCap = toNumeric(product?.marketCap);
+    const marketCapUsd = marketCapFromSupply ?? fallbackMarketCap ?? quoteVolume ?? null;
+    const vwap24Hr =
+      Number.isFinite(baseVolume) && baseVolume > 0 && Number.isFinite(quoteVolume) && quoteVolume > 0
+        ? quoteVolume / baseVolume
+        : priceUsd;
     const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
     const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
 
@@ -170,8 +208,8 @@ class DataService extends EventEmitter {
       name: displayName,
       baseAsset,
       quoteAsset,
-      supply,
-      maxSupply,
+      supply: supply ?? null,
+      maxSupply: maxSupply ?? null,
       marketCapUsd,
       volumeUsd24Hr: quoteVolume,
       priceUsd,
@@ -187,16 +225,23 @@ class DataService extends EventEmitter {
 
     return seedAssets.map((seed) => {
       const previous = this.assetMap.get(seed.id);
-      const baselinePrice = previous ? previous.priceUsd : parseFloatSafe(seed.priceUsd);
+      const baselinePrice = Number.isFinite(previous?.priceUsd)
+        ? previous.priceUsd
+        : toNumeric(seed.priceUsd) ?? 0;
       const driftPercent = randomBetween(-1.5, 1.5);
       const priceUsd = Number.parseFloat((baselinePrice * (1 + driftPercent / 100)).toFixed(6));
-      const supply = parseFloatSafe(seed.supply);
+      const supply = toNumeric(seed.supply) ?? 0;
       const marketCapUsd = Number.parseFloat((priceUsd * supply).toFixed(2));
-      const baseVolume = parseFloatSafe(seed.volumeUsd24Hr);
+      const baseVolume = toNumeric(seed.volumeUsd24Hr) ?? 0;
       const volumeUsd24Hr = Number.parseFloat((baseVolume * (1 + randomBetween(-0.25, 0.25))).toFixed(2));
-      const previousChange = previous ? previous.changePercent24Hr : parseFloatSafe(seed.changePercent24Hr);
+      const previousChange = Number.isFinite(previous?.changePercent24Hr)
+        ? previous.changePercent24Hr
+        : toNumeric(seed.changePercent24Hr) ?? 0;
       const changePercent24Hr = Number.parseFloat((previousChange * 0.6 + driftPercent * 0.4).toFixed(2));
-      const vwapBase = hasExistingAssets && previous ? (previous.priceUsd + priceUsd) / 2 : parseFloatSafe(seed.vwap24Hr);
+      const vwapBase =
+        hasExistingAssets && Number.isFinite(previous?.priceUsd)
+          ? (previous.priceUsd + priceUsd) / 2
+          : toNumeric(seed.vwap24Hr) ?? priceUsd;
       const vwap24Hr = Number.parseFloat(vwapBase.toFixed(6));
 
       return {
@@ -214,20 +259,21 @@ class DataService extends EventEmitter {
   }
 
   normalizeAsset(asset, timestamp) {
+    const rankValue = Number.parseInt(asset.rank, 10);
     const normalized = {
       id: asset.id,
-      rank: parseInt(asset.rank, 10),
+      rank: Number.isFinite(rankValue) ? rankValue : null,
       symbol: asset.symbol,
       name: asset.name,
       baseAsset: asset.baseAsset,
       quoteAsset: asset.quoteAsset,
-      supply: parseFloatSafe(asset.supply),
-      maxSupply: parseFloatSafe(asset.maxSupply),
-      marketCapUsd: parseFloatSafe(asset.marketCapUsd),
-      volumeUsd24Hr: parseFloatSafe(asset.volumeUsd24Hr),
-      priceUsd: parseFloatSafe(asset.priceUsd),
-      changePercent24Hr: parseFloatSafe(asset.changePercent24Hr),
-      vwap24Hr: parseFloatSafe(asset.vwap24Hr),
+      supply: toNumeric(asset.supply),
+      maxSupply: toNumeric(asset.maxSupply),
+      marketCapUsd: toNumeric(asset.marketCapUsd),
+      volumeUsd24Hr: toNumeric(asset.volumeUsd24Hr),
+      priceUsd: toNumeric(asset.priceUsd),
+      changePercent24Hr: toNumeric(asset.changePercent24Hr),
+      vwap24Hr: toNumeric(asset.vwap24Hr),
       explorer: asset.explorer,
       lastUpdated: timestamp,
     };
@@ -236,6 +282,14 @@ class DataService extends EventEmitter {
   }
 
   appendHistory(id, point) {
+    if (
+      !Number.isFinite(point.priceUsd) ||
+      !Number.isFinite(point.volumeUsd24Hr) ||
+      !Number.isFinite(point.changePercent24Hr)
+    ) {
+      return;
+    }
+
     const history = this.assetHistory.get(id) || [];
     history.push(point);
     if (history.length > 288) {
@@ -245,7 +299,9 @@ class DataService extends EventEmitter {
   }
 
   getAssets() {
-    return Array.from(this.assetMap.values()).sort((a, b) => a.rank - b.rank);
+    return Array.from(this.assetMap.values())
+      .filter((asset) => Number.isFinite(asset.priceUsd))
+      .sort((a, b) => (Number.isFinite(a.rank) && Number.isFinite(b.rank) ? a.rank - b.rank : 0));
   }
 
   getAsset(id) {

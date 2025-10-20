@@ -3,13 +3,52 @@ import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 
-const formatPrice = (value) => `$${Number(value).toFixed(2)}`;
+const coerceNumber = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalised = trimmed.replace(/,/g, '');
+    const parsed = Number.parseFloat(normalised);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const formatPrice = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '$—' : `$${numeric.toFixed(2)}`;
+};
+
+const formatChange = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '—' : `${numeric.toFixed(2)}%`;
+};
+
+const resolveChangeColor = (value) => {
+  const numeric = coerceNumber(value);
+  if (numeric === null) {
+    return 'text.secondary';
+  }
+  return numeric >= 0 ? '#4ade80' : '#f87171';
+};
 
 export function LiveTicker({ assets }) {
   const highlights = useMemo(() => {
-    const sorted = [...assets].sort((a, b) => b.volumeUsd24Hr - a.volumeUsd24Hr);
+    const sortable = assets.filter(
+      (asset) => Number.isFinite(coerceNumber(asset.volumeUsd24Hr)) && Number.isFinite(coerceNumber(asset.priceUsd)),
+    );
+    const sorted = [...sortable].sort(
+      (a, b) => (coerceNumber(b.volumeUsd24Hr) ?? 0) - (coerceNumber(a.volumeUsd24Hr) ?? 0),
+    );
     const top = sorted.slice(0, 8);
-    return [...top, ...top];
+    return top.length ? [...top, ...top] : [];
   }, [assets]);
 
   return (
@@ -35,11 +74,11 @@ export function LiveTicker({ assets }) {
             <Typography
               variant="body2"
               sx={{
-                color: Number(asset.changePercent24Hr) >= 0 ? '#4ade80' : '#f87171',
+                color: resolveChangeColor(asset.changePercent24Hr),
                 fontWeight: 600,
               }}
             >
-              {Number(asset.changePercent24Hr).toFixed(2)}%
+              {formatChange(asset.changePercent24Hr)}
             </Typography>
           </Stack>
         ))}

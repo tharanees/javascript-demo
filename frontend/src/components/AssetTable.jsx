@@ -18,6 +18,44 @@ const numberFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
+const coerceNumber = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalised = trimmed.replace(/,/g, '');
+    const parsed = Number.parseFloat(normalised);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const formatPrice = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '—' : currencyFormatter.format(numeric);
+};
+
+const formatPercent = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '—' : `${numeric.toFixed(2)}%`;
+};
+
+const formatCompactCurrency = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '—' : `$${numberFormatter.format(numeric)}`;
+};
+
+const formatCompactNumber = (value) => {
+  const numeric = coerceNumber(value);
+  return numeric === null ? '—' : numberFormatter.format(numeric);
+};
+
 export function AssetTable({ rows }) {
   const [paginationModel, setPaginationModel] = useState({ page: 0, pageSize: 25 });
   const { data, loading } = useQuery(ASSETS_TABLE_QUERY, {
@@ -54,32 +92,38 @@ export function AssetTable({ rows }) {
         field: 'priceUsd',
         headerName: 'Price',
         flex: 1,
-        valueFormatter: ({ value }) => currencyFormatter.format(Number(value || 0)),
+        valueFormatter: ({ value }) => formatPrice(value),
       },
       {
         field: 'changePercent24Hr',
         headerName: '24h %',
         width: 120,
-        valueFormatter: ({ value }) => `${Number(value || 0).toFixed(2)}%`,
-        cellClassName: (params) => (Number(params.value) >= 0 ? 'gain-cell' : 'loss-cell'),
+        valueFormatter: ({ value }) => formatPercent(value),
+        cellClassName: (params) => {
+          const numeric = coerceNumber(params.value);
+          if (numeric === null) {
+            return '';
+          }
+          return numeric >= 0 ? 'gain-cell' : 'loss-cell';
+        },
       },
       {
         field: 'marketCapUsd',
         headerName: 'Market Cap',
         flex: 1,
-        valueFormatter: ({ value }) => `$${numberFormatter.format(Number(value || 0))}`,
+        valueFormatter: ({ value }) => formatCompactCurrency(value),
       },
       {
         field: 'volumeUsd24Hr',
         headerName: '24h Volume',
         flex: 1,
-        valueFormatter: ({ value }) => `$${numberFormatter.format(Number(value || 0))}`,
+        valueFormatter: ({ value }) => formatCompactCurrency(value),
       },
       {
         field: 'supply',
         headerName: 'Circulating Supply',
         flex: 1,
-        valueFormatter: ({ value }) => numberFormatter.format(Number(value || 0)),
+        valueFormatter: ({ value }) => formatCompactNumber(value),
       },
     ],
     [],
