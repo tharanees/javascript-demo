@@ -52,11 +52,6 @@ const typeDefs = gql`
     dominancePercent: Float!
   }
 
-  type VelocityMetric {
-    averageVelocityPercent: Float!
-    sampleSize: Int!
-  }
-
   type Query {
     assets(limit: Int, offset: Int): [Asset!]!
     asset(id: ID!): Asset
@@ -64,7 +59,6 @@ const typeDefs = gql`
     topMovers(limit: Int): TopMovers!
     changeDistribution: [DistributionBucket!]!
     dominance(limit: Int): [DominanceSlice!]!
-    velocity: VelocityMetric!
   }
 `;
 

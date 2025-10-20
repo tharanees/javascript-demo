@@ -87,32 +87,9 @@ function getDominance(limit = 6) {
   }));
 }
 
-function getVelocityMetrics() {
-  const assets = dataService.getAssets();
-  const historySamples = assets
-    .map((asset) => dataService.getHistory(asset.id))
-    .filter((history) => history.length >= 2)
-    .map((history) => {
-      const latest = history[history.length - 1];
-      const previous = history[history.length - 2];
-      const delta = latest.priceUsd - previous.priceUsd;
-      return Math.abs(delta / (previous.priceUsd || 1));
-    });
-
-  const averageVelocity = historySamples.length
-    ? (historySamples.reduce((sum, value) => sum + value, 0) / historySamples.length) * 100
-    : 0;
-
-  return {
-    averageVelocityPercent: toFixedNumber(averageVelocity, 2),
-    sampleSize: historySamples.length,
-  };
-}
-
 module.exports = {
   getMarketSummary,
   getTopMovers,
   getChangeDistribution,
   getDominance,
-  getVelocityMetrics,
 };

@@ -5,7 +5,7 @@ This project demonstrates a full-stack JavaScript application that streams and v
 ## Features
 
 - **Public dataset integration** – streams CoinMarketCap listings for hundreds of assets when available.
-- **Offline resilience** – automatically falls back to a bundled CoinCap snapshot with synthetic drifts when outbound network access is blocked.
+- **Offline resilience** – automatically falls back to a bundled market snapshot with synthetic drifts when outbound network access is blocked.
 - **GraphQL API** – rich query surface for market summaries, movers, distributions, dominance and more.
 - **WebSocket updates** – pushes live asset snapshots to all connected clients for real-time interactivity.
 - **Service-first backend** – modular `services/` layer powers analytics calculations and history tracking.
@@ -69,4 +69,4 @@ These payloads drive the real-time ticker and live analytics widgets on the dash
 
 ## Dataset credit
 
-Live data is sourced from CoinMarketCap's [data-api listing endpoint](https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing). A trimmed CoinCap snapshot ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review the respective data providers' terms of service before using the feeds in production environments.
+Live data is sourced from CoinMarketCap's [data-api listing endpoint](https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing). A trimmed market snapshot ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review the respective data providers' terms of service before using the feeds in production environments.

@@ -13,7 +13,6 @@ const resolvers = {
     topMovers: (_, { limit }) => analyticsService.getTopMovers(limit),
     changeDistribution: () => analyticsService.getChangeDistribution(),
     dominance: (_, { limit }) => analyticsService.getDominance(limit),
-    velocity: () => analyticsService.getVelocityMetrics(),
   },
   Asset: {
     history: (asset) => dataService.getHistory(asset.id),

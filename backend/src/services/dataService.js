@@ -43,29 +43,33 @@ const resolveFetch = async () => {
 const fetch = (...args) => resolveFetch().then((impl) => impl(...args));
 const seedAssets = require('../data/seedAssets.json');
 
+const MAX_HISTORY_POINTS = 288;
+
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
 
-const parseFloatSafe = (value) => {
+const parseFloatStrict = (value) => {
   if (value === null || value === undefined) {
-    return 0;
+    return null;
   }
 
   if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : 0;
+    return Number.isFinite(value) ? value : null;
   }
 
   if (typeof value === 'string') {
     const sanitized = value.replace(/,/g, '').trim();
     if (!sanitized || sanitized === '--' || sanitized.toLowerCase() === 'n/a') {
-      return 0;
+      return null;
     }
 
     const parsed = Number.parseFloat(sanitized);
-    return Number.isFinite(parsed) ? parsed : 0;
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
-  return 0;
+  return null;
 };
+
+const parseFloatSafe = (value) => parseFloatStrict(value) ?? 0;
 
 const findUsdQuote = (asset) => {
   if (!asset) {
@@ -85,6 +89,38 @@ const findUsdQuote = (asset) => {
   }
 
   return null;
+};
+
+const getValueFromPath = (source, path) => {
+  if (!source) {
+    return undefined;
+  }
+
+  return path.reduce((accumulator, key) => {
+    if (accumulator === null || accumulator === undefined) {
+      return undefined;
+    }
+    return accumulator[key];
+  }, source);
+};
+
+const pickNumeric = (sources, candidatePaths) => {
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+
+    for (const candidate of candidatePaths) {
+      const path = Array.isArray(candidate) ? candidate : [candidate];
+      const value = getValueFromPath(source, path);
+      const parsed = parseFloatStrict(value);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+  }
+
+  return 0;
 };
 
 class DataService extends EventEmitter {
@@ -122,45 +158,27 @@ class DataService extends EventEmitter {
     this.isUpdating = true;
 
     const timestamp = Date.now();
-    let assetPayload = [];
-    let usedFallback = false;
 
     try {
       const coinMarketCapAssets = await this.fetchCoinMarketCapAssets();
-      assetPayload = this.transformCoinMarketCapAssets(coinMarketCapAssets, timestamp);
+      const transformed = this.transformCoinMarketCapAssets(coinMarketCapAssets, timestamp);
 
-      if (!assetPayload.length) {
+      if (!transformed.length) {
         throw new Error('CoinMarketCap returned an empty dataset');
       }
 
-      this.dataSource = 'coinmarketcap';
+      this.ingestAssets(transformed, timestamp, 'coinmarketcap', false);
     } catch (coinMarketCapError) {
-      usedFallback = true;
       const errorMessage = coinMarketCapError.message;
       // eslint-disable-next-line no-console
       console.warn(`[dataService] Falling back to bundled dataset: ${errorMessage}`);
-      assetPayload = this.buildSyntheticAssets(timestamp);
-      this.dataSource = 'synthetic';
+
+      const syntheticAssets = this.buildSyntheticAssets(timestamp);
       this.emit('fallback', { message: errorMessage });
+      this.ingestAssets(syntheticAssets, timestamp, 'synthetic', true);
+    } finally {
+      this.isUpdating = false;
     }
-
-    if (assetPayload.length) {
-      assetPayload.forEach((asset, index) => {
-        const normalized = this.normalizeAsset({ ...asset, rank: asset.rank ?? index + 1 }, timestamp);
-        this.assetMap.set(normalized.id, normalized);
-        this.appendHistory(normalized.id, {
-          timestamp,
-          priceUsd: normalized.priceUsd,
-          volumeUsd24Hr: normalized.volumeUsd24Hr,
-          changePercent24Hr: normalized.changePercent24Hr,
-        });
-      });
-
-      this.lastUpdated = timestamp;
-      this.emit('assets-updated', { assets: this.getAssets(), source: this.dataSource, usedFallback });
-    }
-
-    this.isUpdating = false;
   }
 
   async fetchCoinMarketCapAssets() {
@@ -210,69 +228,58 @@ class DataService extends EventEmitter {
     return assets
       .map((asset, index) => {
         const usdQuote = findUsdQuote(asset);
+        const priceUsd = pickNumeric([usdQuote, asset], [
+          ['price'],
+          ['quote'],
+          ['priceUsd'],
+          ['price_usd'],
+          ['lastPrice'],
+        ]);
 
-        const priceUsd = parseFloatSafe(
-          usdQuote?.price ??
-            usdQuote?.quote ??
-            asset?.price ??
-            asset?.priceUsd ??
-            asset?.price_usd ??
-            asset?.lastPrice ??
-            0,
-        );
+        const supply = pickNumeric([asset, usdQuote], [
+          ['circulating_supply'],
+          ['circulatingSupply'],
+          ['supply'],
+        ]);
 
-        const supply = parseFloatSafe(
-          asset?.circulating_supply ??
-            asset?.circulatingSupply ??
-            asset?.supply ??
-            usdQuote?.circulatingSupply ??
-            usdQuote?.circulating_supply,
-        );
+        const maxSupply = pickNumeric([asset, usdQuote], [
+          ['max_supply'],
+          ['maxSupply'],
+          ['total_supply'],
+          ['totalSupply'],
+        ]);
 
-        const maxSupply = parseFloatSafe(
-          asset?.max_supply ??
-            asset?.maxSupply ??
-            asset?.total_supply ??
-            asset?.totalSupply ??
-            usdQuote?.maxSupply ??
-            usdQuote?.max_supply,
-        );
+        const marketCapUsd = pickNumeric([usdQuote, asset], [
+          ['market_cap'],
+          ['marketCap'],
+          ['market_cap_diluted'],
+          ['marketCapUsd'],
+          ['market_cap_usd'],
+        ]);
 
-        const marketCapUsd = parseFloatSafe(
-          usdQuote?.market_cap ??
-            usdQuote?.marketCap ??
-            usdQuote?.market_cap_diluted ??
-            asset?.market_cap ??
-            asset?.marketCap ??
-            asset?.marketCapUsd ??
-            asset?.market_cap_usd,
-        );
+        const volumeUsd24Hr = pickNumeric([usdQuote, asset], [
+          ['volume_24h'],
+          ['volume24h'],
+          ['volume24H'],
+          ['volume'],
+          ['volumeUsd24Hr'],
+          ['volume_24H'],
+        ]);
 
-        const volumeUsd24Hr = parseFloatSafe(
-          usdQuote?.volume_24h ??
-            usdQuote?.volume24h ??
-            usdQuote?.volume ??
-            asset?.volume_24h ??
-            asset?.volume24h ??
-            asset?.volume24H,
-        );
+        const changePercent24Hr = pickNumeric([usdQuote, asset], [
+          ['percent_change_24h'],
+          ['percentChange24h'],
+          ['change24h'],
+          ['percentChange24H'],
+          ['changePercent24h'],
+          ['changePercent24Hr'],
+        ]);
 
-        const changePercent24Hr = parseFloatSafe(
-          usdQuote?.percent_change_24h ??
-            usdQuote?.percentChange24h ??
-            usdQuote?.change24h ??
-            asset?.percent_change_24h ??
-            asset?.percentChange24h ??
-            asset?.changePercent24h,
-        );
-
-        const vwap24HrRaw = parseFloatSafe(
-          usdQuote?.vwap ??
-            usdQuote?.vwap24h ??
-            usdQuote?.vwap24H ??
-            asset?.vwap24h ??
-            asset?.vwap24H,
-        );
+        const vwap24HrRaw = pickNumeric([usdQuote, asset], [
+          ['vwap'],
+          ['vwap24h'],
+          ['vwap24H'],
+        ]);
         const vwap24Hr = vwap24HrRaw > 0 ? vwap24HrRaw : priceUsd;
 
         const explorerFromUrls = [asset?.urls?.explorer, asset?.urls?.website]
@@ -286,8 +293,8 @@ class DataService extends EventEmitter {
         const baseAsset = asset?.symbol;
         const idSource = asset?.slug || (baseAsset ? baseAsset.toLowerCase() : String(asset?.id ?? index + 1));
         const id = `${idSource}-usd`;
-        const rankValue = parseInt(asset?.cmc_rank ?? asset?.cmcRank ?? asset?.rank ?? index + 1, 10);
-        const rank = Number.isFinite(rankValue) ? rankValue : index + 1;
+        const rankCandidate = Number.parseInt(asset?.cmc_rank ?? asset?.cmcRank ?? asset?.rank, 10);
+        const rank = Number.isFinite(rankCandidate) ? rankCandidate : index + 1;
 
         return {
           id,
@@ -342,10 +349,37 @@ class DataService extends EventEmitter {
     });
   }
 
+  ingestAssets(assets, timestamp, source, usedFallback) {
+    const nextMap = new Map();
+
+    assets.forEach((asset, index) => {
+      const rankValue = Number.parseInt(asset.rank, 10);
+      const normalizedRank = Number.isFinite(rankValue) ? rankValue : index + 1;
+      const normalized = this.normalizeAsset({ ...asset, rank: normalizedRank }, timestamp);
+      nextMap.set(normalized.id, normalized);
+      this.appendHistory(normalized.id, {
+        timestamp,
+        priceUsd: normalized.priceUsd,
+        volumeUsd24Hr: normalized.volumeUsd24Hr,
+        changePercent24Hr: normalized.changePercent24Hr,
+      });
+    });
+
+    this.assetMap = nextMap;
+    this.lastUpdated = timestamp;
+    this.dataSource = source;
+
+    this.emit('assets-updated', {
+      assets: this.getAssets(),
+      source: this.dataSource,
+      usedFallback,
+    });
+  }
+
   normalizeAsset(asset, timestamp) {
-    const normalized = {
+    return {
       id: asset.id,
-      rank: parseInt(asset.rank, 10),
+      rank: Number.parseInt(asset.rank, 10),
       symbol: asset.symbol,
       name: asset.name,
       baseAsset: asset.baseAsset,
@@ -360,14 +394,12 @@ class DataService extends EventEmitter {
       explorer: asset.explorer,
       lastUpdated: timestamp,
     };
-
-    return normalized;
   }
 
   appendHistory(id, point) {
     const history = this.assetHistory.get(id) || [];
     history.push(point);
-    if (history.length > 288) {
+    if (history.length > MAX_HISTORY_POINTS) {
       history.shift();
     }
     this.assetHistory.set(id, history);
