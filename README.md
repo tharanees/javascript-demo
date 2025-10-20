@@ -4,12 +4,12 @@ This project demonstrates a full-stack JavaScript application that streams and v
 
 ## Features
 
-- **Public dataset integration** – streams Binance market data for ~200 spot pairs when available.
+- **Public dataset integration** – streams CoinMarketCap listings for hundreds of assets when available.
 - **Offline resilience** – automatically falls back to a bundled CoinCap snapshot with synthetic drifts when outbound network access is blocked.
 - **GraphQL API** – rich query surface for market summaries, movers, distributions, dominance and more.
 - **WebSocket updates** – pushes live asset snapshots to all connected clients for real-time interactivity.
 - **Service-first backend** – modular `services/` layer powers analytics calculations and history tracking.
-- **Insight-rich UI** – Material UI widgets with Recharts visualisations, live tickers, velocity gauges and paginated ledgers.
+- **Insight-rich UI** – Material UI widgets with Recharts visualisations, live tickers, movers and dominance breakdowns.
 
 ## Project structure
 
@@ -55,19 +55,18 @@ This project demonstrates a full-stack JavaScript application that streams and v
 - `topMovers(limit)` – leading gainers and laggards based on 24h change.
 - `changeDistribution` – bucketed distribution for positive/negative momentum.
 - `dominance(limit)` – market share for top-cap assets.
-- `velocity` – short-term price velocity derived from live history samples.
 - `assets(limit, offset)` – paginated asset ledger with historical price sparklines.
 
 ## WebSocket payloads
 
 Clients subscribing to `ws://localhost:4000/ws` receive JSON messages:
 
-- `snapshot` – full asset array on connection with latest timestamp and current data source (`binance` or `synthetic`).
+- `snapshot` – full asset array on connection with latest timestamp and current data source (`coinmarketcap` or `synthetic`).
 - `update` – refreshed asset array every fetch cycle (~15s) including the data source and whether a fallback was used.
 - `warning` – emitted when the service downgrades to the bundled snapshot because the live API is unavailable.
 
-These payloads drive the real-time ticker and instant table updates on the dashboard.
+These payloads drive the real-time ticker and live analytics widgets on the dashboard.
 
 ## Dataset credit
 
-Live data is sourced from the [Binance](https://binance-docs.github.io/apidocs/spot/en/#public-rest-api) public API. A trimmed CoinCap snapshot ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review the respective data providers' terms of service before using the feeds in production environments.
+Live data is sourced from CoinMarketCap's [data-api listing endpoint](https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing). A trimmed CoinCap snapshot ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review the respective data providers' terms of service before using the feeds in production environments.

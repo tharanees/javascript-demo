@@ -16,18 +16,28 @@ const resolveFetch = async () => {
     return cachedFetch;
   }
 
-  const { default: fetchFn } = await import('node-fetch');
+  try {
+    const { default: fetchFn } = await import('node-fetch');
 
-  if (!proxyUrl) {
-    cachedFetch = fetchFn;
+    if (!proxyUrl) {
+      cachedFetch = fetchFn;
+      return cachedFetch;
+    }
+
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    const agent = new HttpsProxyAgent(proxyUrl);
+    cachedFetch = (url, options = {}) => fetchFn(url, { ...options, agent });
     return cachedFetch;
+  } catch (error) {
+    if (typeof globalThis.fetch === 'function') {
+      // eslint-disable-next-line no-console
+      console.warn(`[dataService] node-fetch unavailable, falling back to global fetch: ${error.message}`);
+      cachedFetch = globalThis.fetch.bind(globalThis);
+      return cachedFetch;
+    }
+
+    throw error;
   }
-
-  const { HttpsProxyAgent } = await import('https-proxy-agent');
-  const agent = new HttpsProxyAgent(proxyUrl);
-  cachedFetch = (url, options = {}) => fetchFn(url, { ...options, agent });
-
-  return cachedFetch;
 };
 
 const fetch = (...args) => resolveFetch().then((impl) => impl(...args));
@@ -55,6 +65,26 @@ const parseFloatSafe = (value) => {
   }
 
   return 0;
+};
+
+const findUsdQuote = (asset) => {
+  if (!asset) {
+    return null;
+  }
+
+  const directUsdQuote = asset?.quote?.USD || asset?.quote?.Usd || asset?.quote?.usd;
+  if (directUsdQuote) {
+    return directUsdQuote;
+  }
+
+  if (Array.isArray(asset?.quotes)) {
+    return asset.quotes.find((entry) => {
+      const code = entry?.symbol || entry?.name || entry?.currency || entry?.currencyCode;
+      return code === 'USD';
+    });
+  }
+
+  return null;
 };
 
 class DataService extends EventEmitter {
@@ -134,18 +164,18 @@ class DataService extends EventEmitter {
   }
 
   async fetchCoinMarketCapAssets() {
-    const apiKey = process.env.COINMARKETCAP_API_KEY;
-
-    if (!apiKey) {
-      throw new Error('CoinMarketCap API key is required (set COINMARKETCAP_API_KEY)');
-    }
-
     const limit = Math.min(this.maxAssets, 500);
-    const url = `https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?start=1&limit=${limit}&convert=USD`;
+    const params = new URLSearchParams({ start: '1', limit: String(limit), convert: 'USD' });
+    const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?${params.toString()}`;
     const headers = {
-      Accept: 'application/json',
-      'Accept-Encoding': 'identity',
-      'X-CMC_PRO_API_KEY': apiKey,
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      Origin: 'https://coinmarketcap.com',
+      Referer: 'https://coinmarketcap.com/',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     };
 
     const response = await fetch(url, { headers });
@@ -156,16 +186,14 @@ class DataService extends EventEmitter {
 
     const payload = await response.json();
 
-    if (payload?.status?.error_code) {
-      const status = payload.status;
+    const status = payload?.status || payload?.data?.status;
+    if (status?.error_code) {
       throw new Error(
-        `CoinMarketCap error ${status.error_code}: ${status.error_message || 'Unknown error'} (${
-          status.timestamp || 'unknown timestamp'
-        })`,
+        `CoinMarketCap error ${status.error_code}: ${status.error_message || 'Unknown error'} (${status.timestamp || 'unknown timestamp'})`,
       );
     }
 
-    const assets = Array.isArray(payload?.data) ? payload.data : [];
+    const assets = Array.isArray(payload?.data?.cryptoCurrencyList) ? payload.data.cryptoCurrencyList : [];
 
     if (!assets.length) {
       throw new Error('CoinMarketCap response did not include asset data');
@@ -177,7 +205,7 @@ class DataService extends EventEmitter {
   transformCoinMarketCapAssets(assets, timestamp) {
     return assets
       .map((asset, index) => {
-        const usdQuote = asset?.quote?.USD || asset?.quote?.Usd || asset?.quote?.usd || null;
+        const usdQuote = findUsdQuote(asset);
 
         const priceUsd = parseFloatSafe(
           usdQuote?.price ??
@@ -185,7 +213,7 @@ class DataService extends EventEmitter {
             asset?.price ??
             asset?.priceUsd ??
             asset?.price_usd ??
-            asset?.usdPrice ??
+            asset?.lastPrice ??
             0,
         );
 
@@ -203,8 +231,7 @@ class DataService extends EventEmitter {
             asset?.total_supply ??
             asset?.totalSupply ??
             usdQuote?.maxSupply ??
-            usdQuote?.max_supply ??
-            asset?.sMaxSupply,
+            usdQuote?.max_supply,
         );
 
         const marketCapUsd = parseFloatSafe(
@@ -244,10 +271,13 @@ class DataService extends EventEmitter {
         );
         const vwap24Hr = vwap24HrRaw > 0 ? vwap24HrRaw : priceUsd;
 
-        const explorerFromUrls =
-          (Array.isArray(asset?.urls?.explorer) && asset.urls.explorer.find(Boolean)) ||
-          (Array.isArray(asset?.urls?.website) && asset.urls.website.find(Boolean));
-        const explorer = explorerFromUrls || (asset?.slug ? `https://coinmarketcap.com/currencies/${asset.slug}/` : undefined);
+        const explorerFromUrls = [asset?.urls?.explorer, asset?.urls?.website]
+          .filter(Array.isArray)
+          .flat()
+          .find((entry) => typeof entry === 'string' && entry.trim().length > 0);
+
+        const explorer =
+          explorerFromUrls || (asset?.slug ? `https://coinmarketcap.com/currencies/${asset.slug}/` : undefined);
 
         const baseAsset = asset?.symbol;
         const idSource = asset?.slug || (baseAsset ? baseAsset.toLowerCase() : String(asset?.id ?? index + 1));

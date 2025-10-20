@@ -13,8 +13,6 @@ import { SummaryCards } from './components/SummaryCards.jsx';
 import { MarketMovers } from './components/MarketMovers.jsx';
 import { ChangeDistributionChart } from './components/ChangeDistributionChart.jsx';
 import { DominancePie } from './components/DominancePie.jsx';
-import { VelocityGauge } from './components/VelocityGauge.jsx';
-import { AssetTable } from './components/AssetTable.jsx';
 import { LiveTicker } from './components/LiveTicker.jsx';
 import { useLiveAssets } from './hooks/useLiveAssets.js';
 import { DASHBOARD_QUERY } from './graphql/queries.js';
@@ -64,8 +62,8 @@ export default function App() {
 
     const totalMarketCap = live.assets.reduce((sum, asset) => sum + (Number(asset.marketCapUsd) || 0), 0);
     const totalVolume = live.assets.reduce((sum, asset) => sum + (Number(asset.volumeUsd24Hr) || 0), 0);
-    const averageChange = live.assets.reduce((sum, asset) => sum + (Number(asset.changePercent24Hr) || 0), 0) /
-      live.assets.length;
+    const averageChange =
+      live.assets.reduce((sum, asset) => sum + (Number(asset.changePercent24Hr) || 0), 0) / live.assets.length;
     const positiveChangeCount = live.assets.filter((asset) => Number(asset.changePercent24Hr) >= 0).length;
 
     return {
@@ -84,10 +82,9 @@ export default function App() {
   const movers = data?.topMovers;
   const distribution = data?.changeDistribution ?? [];
   const dominance = data?.dominance ?? [];
-  const velocity = data?.velocity;
   const dataSource = summary?.dataSource ?? live.source;
   const dataSourceDescription = {
-    binance: 'Binance live market data',
+    coinmarketcap: 'CoinMarketCap live market data',
     synthetic: 'Bundled offline snapshot with synthetic updates',
   };
 
@@ -130,20 +127,10 @@ export default function App() {
               <DominancePie data={dominance} />
             )}
           </Grid>
-          <Grid size={{ xs: 12, lg: 4 }}>
-            {loading && !velocity ? (
-              <Skeleton variant="rounded" height={320} />
-            ) : (
-              <VelocityGauge metric={velocity} />
-            )}
-          </Grid>
-          <Grid size={{ xs: 12 }}>
-            <AssetTable rows={live.assets} />
-          </Grid>
         </Grid>
         <Stack direction="row" justifyContent="flex-end" mt={4}>
           <Typography variant="caption" color="text.secondary">
-            Powered by Binance market data (with offline synthetic fallback)
+            Powered by CoinMarketCap market data (with offline synthetic fallback)
           </Typography>
         </Stack>
       </Container>

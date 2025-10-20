@@ -41,10 +41,6 @@ export const DASHBOARD_QUERY = gql`
       symbol
       dominancePercent
     }
-    velocity {
-      averageVelocityPercent
-      sampleSize
-    }
   }
 `;
 
