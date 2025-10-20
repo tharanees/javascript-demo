@@ -1,13 +1,36 @@
 const EventEmitter = require('events');
 
-const fetch = async (...args) => {
-  if (typeof globalThis.fetch === 'function') {
-    return globalThis.fetch(...args);
+const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+let cachedFetch = null;
+let fetchInitialised = false;
+
+const resolveFetch = async () => {
+  if (fetchInitialised) {
+    return cachedFetch;
+  }
+
+  fetchInitialised = true;
+
+  if (typeof globalThis.fetch === 'function' && !proxyUrl) {
+    cachedFetch = globalThis.fetch.bind(globalThis);
+    return cachedFetch;
   }
 
   const { default: fetchFn } = await import('node-fetch');
-  return fetchFn(...args);
+
+  if (!proxyUrl) {
+    cachedFetch = fetchFn;
+    return cachedFetch;
+  }
+
+  const { HttpsProxyAgent } = await import('https-proxy-agent');
+  const agent = new HttpsProxyAgent(proxyUrl);
+  cachedFetch = (url, options = {}) => fetchFn(url, { ...options, agent });
+
+  return cachedFetch;
 };
+
+const fetch = (...args) => resolveFetch().then((impl) => impl(...args));
 const seedAssets = require('../data/seedAssets.json');
 
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
@@ -92,13 +115,25 @@ class DataService extends EventEmitter {
       }
 
       this.dataSource = 'binance';
-    } catch (error) {
-      usedFallback = true;
-      // eslint-disable-next-line no-console
-      console.warn(`[dataService] Falling back to bundled dataset: ${error.message}`);
-      assetPayload = this.buildSyntheticAssets(timestamp);
-      this.dataSource = 'synthetic';
-      this.emit('fallback', { message: error.message });
+    } catch (binanceError) {
+      try {
+        const coincapAssets = await this.fetchCoinCapAssets();
+        assetPayload = this.transformCoinCapAssets(coincapAssets, timestamp);
+
+        if (!assetPayload.length) {
+          throw new Error('CoinCap returned an empty dataset');
+        }
+
+        this.dataSource = 'coincap';
+      } catch (coincapError) {
+        usedFallback = true;
+        const errorMessage = `${binanceError.message}; ${coincapError.message}`;
+        // eslint-disable-next-line no-console
+        console.warn(`[dataService] Falling back to bundled dataset: ${errorMessage}`);
+        assetPayload = this.buildSyntheticAssets(timestamp);
+        this.dataSource = 'synthetic';
+        this.emit('fallback', { message: errorMessage });
+      }
     }
 
     if (assetPayload.length) {
@@ -176,6 +211,23 @@ class DataService extends EventEmitter {
       console.warn(`[dataService] Primary Binance endpoint failed: ${primaryError.message}`);
       return tryPaginated();
     }
+  }
+
+  async fetchCoinCapAssets() {
+    const limit = Math.min(this.maxAssets, 2000);
+    const url = `https://api.coincap.io/v2/assets?limit=${limit}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch CoinCap assets: ${response.status} ${response.statusText}`);
+    }
+
+    const payload = await response.json();
+    if (!payload || !Array.isArray(payload.data) || !payload.data.length) {
+      throw new Error('CoinCap response did not include asset data');
+    }
+
+    return payload.data;
   }
 
   extractProducts(payload) {
@@ -321,6 +373,29 @@ class DataService extends EventEmitter {
       explorer,
       lastUpdated: timestamp,
     };
+  }
+
+  transformCoinCapAssets(assets, timestamp) {
+    return assets
+      .map((asset, index) => ({
+        id: `${asset.id}-usd`,
+        symbol: asset.symbol,
+        name: asset.name,
+        baseAsset: asset.symbol,
+        quoteAsset: 'USD',
+        supply: parseFloatSafe(asset.supply),
+        maxSupply: parseFloatSafe(asset.maxSupply),
+        marketCapUsd: parseFloatSafe(asset.marketCapUsd),
+        volumeUsd24Hr: parseFloatSafe(asset.volumeUsd24Hr),
+        priceUsd: parseFloatSafe(asset.priceUsd),
+        changePercent24Hr: parseFloatSafe(asset.changePercent24Hr),
+        vwap24Hr: parseFloatSafe(asset.vwap24Hr),
+        explorer: asset.explorer,
+        lastUpdated: timestamp,
+        rank: parseInt(asset.rank ?? index + 1, 10),
+      }))
+      .filter((asset) => asset.priceUsd > 0)
+      .slice(0, this.maxAssets);
   }
 
   buildSyntheticAssets(timestamp) {
