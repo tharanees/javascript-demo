@@ -24,10 +24,13 @@ export function Header({ status, lastUpdated, dataSource, warning }) {
   }[status] || 'default';
 
   const sourceLabel = {
+    binance: 'Binance live API',
     remote: 'CoinCap live API',
     synthetic: 'Bundled snapshot (fallback)',
     uninitialised: 'initialising',
-  }[dataSource] || 'n/a';
+  }[dataSource] || 'N/A';
+
+  const sourceColor = dataSource === 'synthetic' ? 'warning' : dataSource === 'binance' ? 'success' : 'default';
 
   return (
     <AppBar position="sticky" color="transparent" elevation={0} sx={{ backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(148,163,184,0.2)' }}>
@@ -37,12 +40,7 @@ export function Header({ status, lastUpdated, dataSource, warning }) {
             Crypto Pulse
           </Typography>
           <Chip label={`Status: ${status}`} color={statusColor} variant="outlined" size="small" />
-          <Chip
-            label={`Source: ${sourceLabel}`}
-            color={dataSource === 'synthetic' ? 'warning' : 'default'}
-            variant="outlined"
-            size="small"
-          />
+          <Chip label={`Source: ${sourceLabel}`} color={sourceColor} variant="outlined" size="small" />
           {warning ? (
             <Tooltip title={warning} placement="bottom">
               <Chip label="Fallback active" color="warning" size="small" />

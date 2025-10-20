@@ -55,6 +55,10 @@ export default function App() {
   const dominance = data?.dominance ?? [];
   const velocity = data?.velocity;
   const dataSource = summary?.dataSource ?? live.source;
+  const dataSourceDescription = {
+    binance: 'Binance live market data',
+    synthetic: 'Bundled offline snapshot with synthetic updates',
+  };
 
   return (
     <ThemeProvider theme={theme}>
@@ -70,7 +74,7 @@ export default function App() {
         <SummaryCards summary={summary} />
         {dataSource ? (
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            Data source: {dataSource === 'synthetic' ? 'Bundled offline snapshot with synthetic updates' : 'CoinCap live API'}
+            Data source: {dataSourceDescription[dataSource] ?? dataSource}
           </Typography>
         ) : null}
         <Grid container spacing={3} sx={{ mt: 1 }}>
@@ -108,7 +112,7 @@ export default function App() {
         </Grid>
         <Stack direction="row" justifyContent="flex-end" mt={4}>
           <Typography variant="caption" color="text.secondary">
-            Powered by CoinCap.io public dataset
+            Powered by Binance market data (with offline synthetic fallback)
           </Typography>
         </Stack>
       </Container>

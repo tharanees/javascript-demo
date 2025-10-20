@@ -21,7 +21,8 @@ class DataService extends EventEmitter {
     this.dataSource = 'uninitialised';
     this.exchangeInfo = new Map();
     this.exchangeInfoLoaded = false;
-    this.supportedQuoteAssets = new Set(['USDT', 'BUSD', 'USDC', 'FDUSD', 'TUSD', 'USD']);
+    this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USD'];
+    this.supportedQuoteAssets = new Set(this.quoteAssetPreference);
   }
 
   async start(intervalMs = 15000) {
@@ -121,9 +122,39 @@ class DataService extends EventEmitter {
   }
 
   transformBinanceTickers(tickers, timestamp) {
-    const enriched = tickers
-      .map((ticker) => this.buildAssetFromTicker(ticker, timestamp))
-      .filter((asset) => asset !== null);
+    const groupedByBase = new Map();
+
+    tickers.forEach((ticker) => {
+      const meta = this.exchangeInfo.get(ticker.symbol);
+      if (!meta || !this.supportedQuoteAssets.has(meta.quoteAsset)) {
+        return;
+      }
+
+      const asset = this.buildAssetFromTicker(ticker, meta, timestamp);
+      if (!asset) {
+        return;
+      }
+
+      const existing = groupedByBase.get(asset.baseAsset);
+      if (!existing) {
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: meta.quoteAsset });
+        return;
+      }
+
+      const existingPriority = this.quoteAssetPreference.indexOf(existing.quoteAsset);
+      const currentPriority = this.quoteAssetPreference.indexOf(meta.quoteAsset);
+
+      if (currentPriority !== -1 && (existingPriority === -1 || currentPriority < existingPriority)) {
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: meta.quoteAsset });
+        return;
+      }
+
+      if (currentPriority === existingPriority && asset.volumeUsd24Hr > existing.asset.volumeUsd24Hr) {
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: meta.quoteAsset });
+      }
+    });
+
+    const enriched = Array.from(groupedByBase.values()).map(({ asset }) => asset);
 
     enriched.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
 
@@ -133,17 +164,13 @@ class DataService extends EventEmitter {
     }));
   }
 
-  buildAssetFromTicker(ticker, timestamp) {
-    const meta = this.exchangeInfo.get(ticker.symbol);
-    if (!meta || !this.supportedQuoteAssets.has(meta.quoteAsset)) {
-      return null;
-    }
-
+  buildAssetFromTicker(ticker, meta, timestamp) {
     const baseAsset = meta.baseAsset;
     const quoteAsset = meta.quoteAsset;
 
     const priceUsd = parseFloatSafe(ticker.lastPrice);
     const quoteVolume = parseFloatSafe(ticker.quoteVolume);
+    const baseVolume = parseFloatSafe(ticker.volume);
     const changePercent = parseFloatSafe(ticker.priceChangePercent);
     const vwap24Hr = parseFloatSafe(ticker.weightedAvgPrice);
 
@@ -151,20 +178,24 @@ class DataService extends EventEmitter {
       return null;
     }
 
+    const circulatingEstimate = baseVolume || (priceUsd ? quoteVolume / priceUsd : 0);
     const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
+    const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
 
     return {
       id,
       symbol: baseAsset,
       name: `${baseAsset}/${quoteAsset}`,
-      supply: 0,
-      maxSupply: 0,
+      baseAsset,
+      quoteAsset,
+      supply: circulatingEstimate,
+      maxSupply: circulatingEstimate,
       marketCapUsd: quoteVolume,
       volumeUsd24Hr: quoteVolume,
       priceUsd,
       changePercent24Hr: changePercent,
       vwap24Hr,
-      explorer: '',
+      explorer,
       lastUpdated: timestamp,
     };
   }
@@ -194,6 +225,8 @@ class DataService extends EventEmitter {
         changePercent24Hr,
         vwap24Hr,
         lastUpdated: timestamp,
+        baseAsset: seed.symbol,
+        quoteAsset: 'USD',
       };
     });
   }
@@ -204,6 +237,8 @@ class DataService extends EventEmitter {
       rank: parseInt(asset.rank, 10),
       symbol: asset.symbol,
       name: asset.name,
+      baseAsset: asset.baseAsset,
+      quoteAsset: asset.quoteAsset,
       supply: parseFloatSafe(asset.supply),
       maxSupply: parseFloatSafe(asset.maxSupply),
       marketCapUsd: parseFloatSafe(asset.marketCapUsd),
