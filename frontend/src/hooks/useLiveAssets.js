@@ -67,7 +67,6 @@ export function useLiveAssets() {
             setState((prev) => ({ ...prev, status: 'error', error: payload.data.message }));
           }
         } catch (error) {
-          // eslint-disable-next-line no-console
           console.error('Failed to parse websocket payload', error);
         }
       });

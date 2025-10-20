@@ -31,13 +31,11 @@ async function startServer() {
 
   server.listen(PORT, async () => {
     await dataService.start();
-    // eslint-disable-next-line no-console
-    console.log(`🚀 Server ready at http://localhost:${PORT}${apolloServer.graphqlPath}`);
+    console.log(`Server ready at http://localhost:${PORT}${apolloServer.graphqlPath}`);
   });
 }
 
 startServer().catch((error) => {
-  // eslint-disable-next-line no-console
   console.error('Failed to start server', error);
   process.exit(1);
 });

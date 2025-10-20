@@ -30,7 +30,6 @@ const resolveFetch = async () => {
     return cachedFetch;
   } catch (error) {
     if (typeof globalThis.fetch === 'function') {
-      // eslint-disable-next-line no-console
       console.warn(`[dataService] node-fetch unavailable, falling back to global fetch: ${error.message}`);
       cachedFetch = globalThis.fetch.bind(globalThis);
       return cachedFetch;
@@ -170,7 +169,6 @@ class DataService extends EventEmitter {
       this.ingestAssets(transformed, timestamp, 'coinmarketcap', false);
     } catch (coinMarketCapError) {
       const errorMessage = coinMarketCapError.message;
-      // eslint-disable-next-line no-console
       console.warn(`[dataService] Falling back to bundled dataset: ${errorMessage}`);
 
       const syntheticAssets = this.buildSyntheticAssets(timestamp);
