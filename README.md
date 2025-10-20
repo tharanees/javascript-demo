@@ -4,7 +4,8 @@ This project demonstrates a full-stack JavaScript application that streams and v
 
 ## Features
 
-- **Public dataset integration** – streams CoinCap.io market data for ~200 crypto assets.
+- **Public dataset integration** – streams CoinCap.io market data for ~200 crypto assets when available.
+- **Offline resilience** – automatically falls back to a bundled CoinCap snapshot with synthetic drifts when outbound network access is blocked.
 - **GraphQL API** – rich query surface for market summaries, movers, distributions, dominance and more.
 - **WebSocket updates** – pushes live asset snapshots to all connected clients for real-time interactivity.
 - **Service-first backend** – modular `services/` layer powers analytics calculations and history tracking.
@@ -38,6 +39,7 @@ This project demonstrates a full-stack JavaScript application that streams and v
    npm run dev
    ```
    The GraphQL playground is served at `http://localhost:4000/graphql` and WebSocket updates at `ws://localhost:4000/ws`.
+   When the environment prevents outbound HTTPS requests the server transparently switches to the bundled dataset – no extra setup required.
 
 2. **Frontend**
    ```bash
@@ -60,12 +62,12 @@ This project demonstrates a full-stack JavaScript application that streams and v
 
 Clients subscribing to `ws://localhost:4000/ws` receive JSON messages:
 
-- `snapshot` – full asset array on connection with latest timestamp.
-- `update` – refreshed asset array every fetch cycle (~15s).
-- `error` – network/data fetch failures propagated to subscribers.
+- `snapshot` – full asset array on connection with latest timestamp and current data source (`remote` or `synthetic`).
+- `update` – refreshed asset array every fetch cycle (~15s) including the data source and whether a fallback was used.
+- `warning` – emitted when the service downgrades to the bundled snapshot because the live API is unavailable.
 
 These payloads drive the real-time ticker and instant table updates on the dashboard.
 
 ## Dataset credit
 
-Data is sourced from the [CoinCap](https://coincap.io/) public API. Please review their terms of service before using the data in production environments.
+Data is sourced from the [CoinCap](https://coincap.io/) public API. A trimmed snapshot from the same dataset ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review CoinCap's terms of service before using the data in production environments.

@@ -26,6 +26,7 @@ function getMarketSummary() {
     positiveChangeCount,
     negativeChangeCount,
     lastUpdated: dataService.getLastUpdated(),
+    dataSource: dataService.getDataSource(),
   };
 }
 

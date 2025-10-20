@@ -33,6 +33,7 @@ const typeDefs = gql`
     positiveChangeCount: Int!
     negativeChangeCount: Int!
     lastUpdated: Float
+    dataSource: String!
   }
 
   type TopMovers {

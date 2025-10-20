@@ -1,6 +1,14 @@
 const EventEmitter = require('events');
 
 const fetch = (...args) => import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
+const seedAssets = require('../data/seedAssets.json');
+
+const randomBetween = (min, max) => Math.random() * (max - min) + min;
+
+const parseFloatSafe = (value) => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 class DataService extends EventEmitter {
   constructor() {
@@ -10,6 +18,7 @@ class DataService extends EventEmitter {
     this.lastUpdated = null;
     this.isUpdating = false;
     this.intervalHandle = null;
+    this.dataSource = 'uninitialised';
   }
 
   async start(intervalMs = 15000) {
@@ -33,16 +42,36 @@ class DataService extends EventEmitter {
     }
 
     this.isUpdating = true;
+
+    const timestamp = Date.now();
+    let assetPayload = [];
+    let usedFallback = false;
+
     try {
       const response = await fetch('https://api.coincap.io/v2/assets?limit=200');
       if (!response.ok) {
-        throw new Error(`Failed to fetch assets: ${response.statusText}`);
+        throw new Error(`Failed to fetch assets: ${response.status} ${response.statusText}`);
       }
-      const payload = await response.json();
-      const { data } = payload;
-      const timestamp = Date.now();
 
-      data.forEach((asset) => {
+      const payload = await response.json();
+      assetPayload = Array.isArray(payload?.data) ? payload.data : [];
+
+      if (!assetPayload.length) {
+        throw new Error('Received empty payload from upstream dataset');
+      }
+
+      this.dataSource = 'remote';
+    } catch (error) {
+      usedFallback = true;
+      // eslint-disable-next-line no-console
+      console.warn(`[dataService] Falling back to bundled dataset: ${error.message}`);
+      assetPayload = this.buildSyntheticAssets(timestamp);
+      this.dataSource = 'synthetic';
+      this.emit('fallback', { message: error.message });
+    }
+
+    if (assetPayload.length) {
+      assetPayload.forEach((asset) => {
         const normalized = this.normalizeAsset(asset, timestamp);
         this.assetMap.set(normalized.id, normalized);
         this.appendHistory(normalized.id, {
@@ -54,20 +83,42 @@ class DataService extends EventEmitter {
       });
 
       this.lastUpdated = timestamp;
-      this.emit('assets-updated', this.getAssets());
-    } catch (error) {
-      this.emit('error', error);
-    } finally {
-      this.isUpdating = false;
+      this.emit('assets-updated', { assets: this.getAssets(), source: this.dataSource, usedFallback });
     }
+
+    this.isUpdating = false;
+  }
+
+  buildSyntheticAssets(timestamp) {
+    const hasExistingAssets = this.assetMap.size > 0;
+
+    return seedAssets.map((seed) => {
+      const previous = this.assetMap.get(seed.id);
+      const baselinePrice = previous ? previous.priceUsd : parseFloatSafe(seed.priceUsd);
+      const driftPercent = randomBetween(-1.5, 1.5);
+      const priceUsd = Number.parseFloat((baselinePrice * (1 + driftPercent / 100)).toFixed(6));
+      const supply = parseFloatSafe(seed.supply);
+      const marketCapUsd = Number.parseFloat((priceUsd * supply).toFixed(2));
+      const baseVolume = parseFloatSafe(seed.volumeUsd24Hr);
+      const volumeUsd24Hr = Number.parseFloat((baseVolume * (1 + randomBetween(-0.25, 0.25))).toFixed(2));
+      const previousChange = previous ? previous.changePercent24Hr : parseFloatSafe(seed.changePercent24Hr);
+      const changePercent24Hr = Number.parseFloat((previousChange * 0.6 + driftPercent * 0.4).toFixed(2));
+      const vwapBase = hasExistingAssets && previous ? (previous.priceUsd + priceUsd) / 2 : parseFloatSafe(seed.vwap24Hr);
+      const vwap24Hr = Number.parseFloat(vwapBase.toFixed(6));
+
+      return {
+        ...seed,
+        priceUsd,
+        marketCapUsd,
+        volumeUsd24Hr,
+        changePercent24Hr,
+        vwap24Hr,
+        lastUpdated: timestamp,
+      };
+    });
   }
 
   normalizeAsset(asset, timestamp) {
-    const parseFloatSafe = (value) => {
-      const parsed = Number.parseFloat(value);
-      return Number.isFinite(parsed) ? parsed : 0;
-    };
-
     const normalized = {
       id: asset.id,
       rank: parseInt(asset.rank, 10),
@@ -110,6 +161,10 @@ class DataService extends EventEmitter {
 
   getLastUpdated() {
     return this.lastUpdated;
+  }
+
+  getDataSource() {
+    return this.dataSource;
   }
 }
 

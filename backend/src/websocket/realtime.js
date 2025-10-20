@@ -21,26 +21,31 @@ function initWebsocket(server) {
         data: {
           lastUpdated: dataService.getLastUpdated(),
           assets,
+          source: dataService.getDataSource(),
         },
       }),
     );
   });
 
-  dataService.on('assets-updated', (assets) => {
+  dataService.on('assets-updated', ({ assets, source, usedFallback }) => {
     broadcast({
       type: 'update',
       data: {
         lastUpdated: dataService.getLastUpdated(),
         assets,
+        source,
+        usedFallback,
       },
     });
   });
 
-  dataService.on('error', (error) => {
+  dataService.on('fallback', (payload) => {
     broadcast({
-      type: 'error',
+      type: 'warning',
       data: {
-        message: error.message,
+        message: payload.message,
+        lastUpdated: dataService.getLastUpdated(),
+        source: dataService.getDataSource(),
       },
     });
   });

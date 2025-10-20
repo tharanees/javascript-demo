@@ -54,14 +54,25 @@ export default function App() {
   const distribution = data?.changeDistribution ?? [];
   const dominance = data?.dominance ?? [];
   const velocity = data?.velocity;
+  const dataSource = summary?.dataSource ?? live.source;
 
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Header status={live.status} lastUpdated={live.lastUpdated} />
+      <Header
+        status={live.status}
+        lastUpdated={live.lastUpdated ?? summary?.lastUpdated}
+        dataSource={dataSource}
+        warning={live.warning}
+      />
       <Container maxWidth="xl" sx={{ py: 4 }}>
         <LiveTicker assets={live.assets} />
         <SummaryCards summary={summary} />
+        {dataSource ? (
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+            Data source: {dataSource === 'synthetic' ? 'Bundled offline snapshot with synthetic updates' : 'CoinCap live API'}
+          </Typography>
+        ) : null}
         <Grid container spacing={3} sx={{ mt: 1 }}>
           <Grid size={{ xs: 12, lg: 4 }}>
             {loading && !movers ? (

@@ -10,6 +10,7 @@ export const DASHBOARD_QUERY = gql`
       positiveChangeCount
       negativeChangeCount
       lastUpdated
+      dataSource
     }
     topMovers(limit: $assetLimit) {
       gainers {
