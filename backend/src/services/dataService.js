@@ -57,14 +57,6 @@ const parseFloatSafe = (value) => {
   return 0;
 };
 
-const normalizeQuote = (quote) => {
-  if (typeof quote !== 'string') {
-    return quote;
-  }
-
-  return quote.replaceAll('Ⓢ', '').toUpperCase();
-};
-
 class DataService extends EventEmitter {
   constructor() {
     super();
@@ -74,9 +66,6 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
     this.intervalHandle = null;
     this.dataSource = 'uninitialised';
-    this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USDⓈ', 'USD'];
-    this.quoteAssetPreferenceNormalized = this.quoteAssetPreference.map(normalizeQuote);
-    this.supportedQuoteAssets = new Set(this.quoteAssetPreferenceNormalized);
     this.maxAssets = 400;
   }
 
@@ -107,33 +96,22 @@ class DataService extends EventEmitter {
     let usedFallback = false;
 
     try {
-      const products = await this.fetchLiveProducts();
-      assetPayload = this.transformBinanceProducts(products, timestamp);
+      const coinMarketCapAssets = await this.fetchCoinMarketCapAssets();
+      assetPayload = this.transformCoinMarketCapAssets(coinMarketCapAssets, timestamp);
 
       if (!assetPayload.length) {
-        throw new Error('Received empty payload from Binance product API');
+        throw new Error('CoinMarketCap returned an empty dataset');
       }
 
-      this.dataSource = 'binance';
-    } catch (binanceError) {
-      try {
-        const coincapAssets = await this.fetchCoinCapAssets();
-        assetPayload = this.transformCoinCapAssets(coincapAssets, timestamp);
-
-        if (!assetPayload.length) {
-          throw new Error('CoinCap returned an empty dataset');
-        }
-
-        this.dataSource = 'coincap';
-      } catch (coincapError) {
-        usedFallback = true;
-        const errorMessage = `${binanceError.message}; ${coincapError.message}`;
-        // eslint-disable-next-line no-console
-        console.warn(`[dataService] Falling back to bundled dataset: ${errorMessage}`);
-        assetPayload = this.buildSyntheticAssets(timestamp);
-        this.dataSource = 'synthetic';
-        this.emit('fallback', { message: errorMessage });
-      }
+      this.dataSource = 'coinmarketcap';
+    } catch (coinMarketCapError) {
+      usedFallback = true;
+      const errorMessage = coinMarketCapError.message;
+      // eslint-disable-next-line no-console
+      console.warn(`[dataService] Falling back to bundled dataset: ${errorMessage}`);
+      assetPayload = this.buildSyntheticAssets(timestamp);
+      this.dataSource = 'synthetic';
+      this.emit('fallback', { message: errorMessage });
     }
 
     if (assetPayload.length) {
@@ -155,246 +133,131 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
   }
 
-  async fetchLiveProducts() {
-    const primaryUrl =
-      'https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=true';
-
-    const tryPrimary = async () => {
-      const response = await fetch(primaryUrl);
-      if (!response.ok) {
-        throw new Error(`Failed to fetch Binance products: ${response.status} ${response.statusText}`);
-      }
-
-      const payload = await response.json();
-      const products = this.extractProducts(payload);
-      if (products.length) {
-        return products;
-      }
-
-      throw new Error('Primary Binance endpoint returned an empty dataset');
+  async fetchCoinMarketCapAssets() {
+    const limit = Math.min(this.maxAssets, 500);
+    const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?start=1&limit=${limit}&convert=USD`;
+    const headers = {
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'User-Agent':
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+      Referer: 'https://coinmarketcap.com/',
     };
 
-    const tryPaginated = async () => {
-      const aggregated = [];
-      const pageSize = 500;
-      for (let page = 1; page <= 5; page += 1) {
-        const url = `https://www.binance.com/bapi/asset/v3/public/asset-service/product/list?page=${page}&rows=${pageSize}&includeEtf=true`;
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch Binance paginated products: ${response.status} ${response.statusText}`);
-        }
-
-        const payload = await response.json();
-        const products = this.extractProducts(payload);
-        if (!products.length) {
-          break;
-        }
-
-        aggregated.push(...products);
-
-        if (products.length < pageSize) {
-          break;
-        }
-      }
-
-      if (!aggregated.length) {
-        throw new Error('Paginated Binance endpoint returned an empty dataset');
-      }
-
-      return aggregated;
-    };
-
-    try {
-      return await tryPrimary();
-    } catch (primaryError) {
-      // eslint-disable-next-line no-console
-      console.warn(`[dataService] Primary Binance endpoint failed: ${primaryError.message}`);
-      return tryPaginated();
-    }
-  }
-
-  async fetchCoinCapAssets() {
-    const limit = Math.min(this.maxAssets, 2000);
-    const url = `https://api.coincap.io/v2/assets?limit=${limit}`;
-    const response = await fetch(url);
+    const response = await fetch(url, { headers });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch CoinCap assets: ${response.status} ${response.statusText}`);
+      throw new Error(`Failed to fetch CoinMarketCap assets: ${response.status} ${response.statusText}`);
     }
 
     const payload = await response.json();
-    if (!payload || !Array.isArray(payload.data) || !payload.data.length) {
-      throw new Error('CoinCap response did not include asset data');
+    const assets =
+      (Array.isArray(payload?.data?.cryptoCurrencyList) && payload.data.cryptoCurrencyList) ||
+      (Array.isArray(payload?.data) && payload.data) ||
+      [];
+
+    if (!assets.length) {
+      throw new Error('CoinMarketCap response did not include asset data');
     }
 
-    return payload.data;
+    return assets;
   }
 
-  extractProducts(payload) {
-    if (!payload) {
-      return [];
-    }
-
-    if (Array.isArray(payload)) {
-      return payload;
-    }
-
-    if (Array.isArray(payload?.data)) {
-      return payload.data;
-    }
-
-    if (Array.isArray(payload?.data?.list)) {
-      return payload.data.list;
-    }
-
-    if (Array.isArray(payload?.data?.rows)) {
-      return payload.data.rows;
-    }
-
-    if (Array.isArray(payload?.data?.products)) {
-      return payload.data.products;
-    }
-
-    if (Array.isArray(payload?.data?.data)) {
-      return payload.data.data;
-    }
-
-    return [];
-  }
-
-  transformBinanceProducts(products, timestamp) {
-    const groupedByBase = new Map();
-
-    products.forEach((product) => {
-      const baseAsset = product?.b ?? product?.baseAsset ?? product?.symbol?.replace(/[^A-Z]/g, '');
-      const quoteAsset = normalizeQuote(product?.q ?? product?.quoteAsset ?? product?.quote ?? product?.quoteToken);
-      if (!baseAsset || !quoteAsset || !this.supportedQuoteAssets.has(quoteAsset)) {
-        return;
-      }
-
-      const asset = this.buildAssetFromProduct(product, timestamp);
-      if (!asset) {
-        return;
-      }
-
-      const existing = groupedByBase.get(asset.baseAsset);
-      if (!existing) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
-        return;
-      }
-
-      const existingPriority = this.quoteAssetPreferenceNormalized.indexOf(existing.quoteAsset);
-      const currentPriority = this.quoteAssetPreferenceNormalized.indexOf(asset.quoteAsset);
-
-      if (currentPriority !== -1 && (existingPriority === -1 || currentPriority < existingPriority)) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
-        return;
-      }
-
-      if (currentPriority === existingPriority && asset.volumeUsd24Hr > existing.asset.volumeUsd24Hr) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
-      }
-    });
-
-    const enriched = Array.from(groupedByBase.values()).map(({ asset }) => asset);
-
-    enriched.sort((a, b) => {
-      const aMetric = a.marketCapUsd > 0 ? a.marketCapUsd : a.volumeUsd24Hr;
-      const bMetric = b.marketCapUsd > 0 ? b.marketCapUsd : b.volumeUsd24Hr;
-      return bMetric - aMetric;
-    });
-
-    return enriched.slice(0, this.maxAssets).map((asset, index) => ({
-      ...asset,
-      rank: index + 1,
-    }));
-  }
-
-  buildAssetFromProduct(product, timestamp) {
-    const baseAsset = product?.b ?? product?.baseAsset ?? product?.base ?? product?.baseToken;
-    const quoteAsset = normalizeQuote(product?.q ?? product?.quoteAsset ?? product?.quote ?? product?.quoteToken);
-
-    if (!baseAsset || !quoteAsset) {
-      return null;
-    }
-
-    const priceUsd = parseFloatSafe(
-      product?.c ??
-        product?.closePrice ??
-        product?.close ??
-        product?.price ??
-        product?.lastPrice ??
-        product?.priceUsd,
-    );
-    const changePercent = parseFloatSafe(
-      product?.P ??
-        product?.priceChangePercent ??
-        product?.priceChangeRate ??
-        product?.percentChange ??
-        product?.priceChange,
-    );
-    const quoteVolume = parseFloatSafe(
-      product?.qv ??
-        product?.quoteVolume ??
-        product?.volumeUsd ??
-        product?.turnover ??
-        product?.tradingVolume ??
-        0,
-    );
-    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? product?.baseVolume ?? 0);
-    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply ?? product?.supply);
-    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply ?? product?.totalSupply) || supply;
-
-    if (!priceUsd) {
-      return null;
-    }
-
-    const displayName = product?.an || product?.assetName || `${baseAsset}/${quoteAsset}`;
-    const marketCapFromSupply = supply > 0 ? priceUsd * supply : 0;
-    const marketCapUsd =
-      marketCapFromSupply || parseFloatSafe(product?.marketCap ?? product?.marketCapUsd ?? product?.mc) || quoteVolume;
-    const vwap24Hr = baseVolume > 0 && quoteVolume > 0 ? quoteVolume / baseVolume : priceUsd;
-    const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
-    const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
-
-    return {
-      id,
-      symbol: baseAsset,
-      name: displayName,
-      baseAsset,
-      quoteAsset,
-      supply,
-      maxSupply,
-      marketCapUsd,
-      volumeUsd24Hr: quoteVolume,
-      priceUsd,
-      changePercent24Hr: changePercent,
-      vwap24Hr,
-      explorer,
-      lastUpdated: timestamp,
-    };
-  }
-
-  transformCoinCapAssets(assets, timestamp) {
+  transformCoinMarketCapAssets(assets, timestamp) {
     return assets
-      .map((asset, index) => ({
-        id: `${asset.id}-usd`,
-        symbol: asset.symbol,
-        name: asset.name,
-        baseAsset: asset.symbol,
-        quoteAsset: 'USD',
-        supply: parseFloatSafe(asset.supply),
-        maxSupply: parseFloatSafe(asset.maxSupply),
-        marketCapUsd: parseFloatSafe(asset.marketCapUsd),
-        volumeUsd24Hr: parseFloatSafe(asset.volumeUsd24Hr),
-        priceUsd: parseFloatSafe(asset.priceUsd),
-        changePercent24Hr: parseFloatSafe(asset.changePercent24Hr),
-        vwap24Hr: parseFloatSafe(asset.vwap24Hr),
-        explorer: asset.explorer,
-        lastUpdated: timestamp,
-        rank: parseInt(asset.rank ?? index + 1, 10),
-      }))
-      .filter((asset) => asset.priceUsd > 0)
+      .map((asset, index) => {
+        const quotes = Array.isArray(asset?.quotes) ? asset.quotes : [];
+        const firstQuote = quotes[0];
+        const usdQuoteFromArray = quotes.find((quote) => {
+          const name = (quote?.name || quote?.symbol || quote?.currency || quote?.code || '').toUpperCase();
+          return name === 'USD';
+        });
+
+        const usdQuote =
+          usdQuoteFromArray ||
+          asset?.quote?.USD ||
+          asset?.quote?.Usd ||
+          asset?.quote?.usd ||
+          null;
+
+        const priceUsd = parseFloatSafe(
+          usdQuote?.price ?? usdQuote?.quote ?? asset?.price ?? asset?.priceUsd ?? firstQuote?.price ?? 0,
+        );
+
+        const supply = parseFloatSafe(
+          asset?.circulatingSupply ?? asset?.supply ?? usdQuote?.circulatingSupply ?? firstQuote?.circulatingSupply,
+        );
+
+        const maxSupply = parseFloatSafe(
+          asset?.maxSupply ?? asset?.totalSupply ?? usdQuote?.maxSupply ?? firstQuote?.maxSupply ?? asset?.sMaxSupply,
+        );
+
+        const marketCapUsd = parseFloatSafe(
+          usdQuote?.marketCap ??
+            usdQuote?.marketCapByTotalSupply ??
+            asset?.marketCap ??
+            asset?.marketCapUsd ??
+            firstQuote?.marketCap,
+        );
+
+        const volumeUsd24Hr = parseFloatSafe(
+          usdQuote?.volume24h ??
+            usdQuote?.volume24H ??
+            usdQuote?.volume ??
+            asset?.volume24h ??
+            asset?.volume24H ??
+            firstQuote?.volume24h,
+        );
+
+        const changePercent24Hr = parseFloatSafe(
+          usdQuote?.percentChange24h ??
+            usdQuote?.percentChange24H ??
+            usdQuote?.change24h ??
+            asset?.percentChange24h ??
+            asset?.percentChange24H ??
+            asset?.changePercent24h,
+        );
+
+        const vwap24HrRaw = parseFloatSafe(
+          usdQuote?.vwap24h ??
+            usdQuote?.vwap24H ??
+            usdQuote?.vwap ??
+            asset?.vwap24h ??
+            asset?.vwap24H ??
+            firstQuote?.vwap24h,
+        );
+        const vwap24Hr = vwap24HrRaw > 0 ? vwap24HrRaw : priceUsd;
+
+        const explorerFromUrls =
+          (Array.isArray(asset?.urls?.explorer) && asset.urls.explorer.find(Boolean)) ||
+          (Array.isArray(asset?.urls?.website) && asset.urls.website.find(Boolean));
+        const explorer = explorerFromUrls || (asset?.slug ? `https://coinmarketcap.com/currencies/${asset.slug}/` : undefined);
+
+        const baseAsset = asset?.symbol;
+        const idSource = asset?.slug || (baseAsset ? baseAsset.toLowerCase() : String(asset?.id ?? index + 1));
+        const id = `${idSource}-usd`;
+        const rankValue = parseInt(asset?.cmcRank ?? asset?.rank ?? index + 1, 10);
+        const rank = Number.isFinite(rankValue) ? rankValue : index + 1;
+
+        return {
+          id,
+          symbol: baseAsset,
+          name: asset?.name ?? baseAsset,
+          baseAsset,
+          quoteAsset: 'USD',
+          supply,
+          maxSupply,
+          marketCapUsd,
+          volumeUsd24Hr,
+          priceUsd,
+          changePercent24Hr,
+          vwap24Hr,
+          explorer,
+          lastUpdated: timestamp,
+          rank,
+        };
+      })
+      .filter((asset) => asset?.symbol && asset.priceUsd > 0)
       .slice(0, this.maxAssets);
   }
 
