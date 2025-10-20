@@ -1,0 +1,30 @@
+{
+  "name": "realtime-dashboard-server",
+  "version": "1.0.0",
+  "description": "GraphQL and WebSocket backend for the TFL real-time dashboard demo.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "keywords": [
+    "tfl",
+    "graphql",
+    "websocket",
+    "dashboard"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "apollo-server-express": "^3.13.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "graphql": "^16.11.0",
+    "node-fetch": "^2.7.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
+  }
+}
