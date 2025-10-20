@@ -1,0 +1,24 @@
+{
+  "name": "javascript-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time crypto dashboard demo using JavaScript, Node.js, GraphQL, and React.",
+  "scripts": {
+    "format": "prettier --check \"**/*.{js,jsx,ts,tsx,json,md}\"",
+    "lint": "eslint \"frontend/src/**/*.{js,jsx}\"",
+    "start:backend": "npm --workspace backend run start",
+    "dev:backend": "npm --workspace backend run dev",
+    "start:frontend": "npm --workspace frontend run dev",
+    "build": "npm --workspace frontend run build"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.34.1",
+    "prettier": "^3.2.5"
+  }
+}
