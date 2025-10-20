@@ -134,14 +134,18 @@ class DataService extends EventEmitter {
   }
 
   async fetchCoinMarketCapAssets() {
+    const apiKey = process.env.COINMARKETCAP_API_KEY;
+
+    if (!apiKey) {
+      throw new Error('CoinMarketCap API key is required (set COINMARKETCAP_API_KEY)');
+    }
+
     const limit = Math.min(this.maxAssets, 500);
-    const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?start=1&limit=${limit}&convert=USD`;
+    const url = `https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?start=1&limit=${limit}&convert=USD`;
     const headers = {
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'en-US,en;q=0.9',
-      'User-Agent':
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-      Referer: 'https://coinmarketcap.com/',
+      Accept: 'application/json',
+      'Accept-Encoding': 'identity',
+      'X-CMC_PRO_API_KEY': apiKey,
     };
 
     const response = await fetch(url, { headers });
@@ -151,10 +155,17 @@ class DataService extends EventEmitter {
     }
 
     const payload = await response.json();
-    const assets =
-      (Array.isArray(payload?.data?.cryptoCurrencyList) && payload.data.cryptoCurrencyList) ||
-      (Array.isArray(payload?.data) && payload.data) ||
-      [];
+
+    if (payload?.status?.error_code) {
+      const status = payload.status;
+      throw new Error(
+        `CoinMarketCap error ${status.error_code}: ${status.error_message || 'Unknown error'} (${
+          status.timestamp || 'unknown timestamp'
+        })`,
+      );
+    }
+
+    const assets = Array.isArray(payload?.data) ? payload.data : [];
 
     if (!assets.length) {
       throw new Error('CoinMarketCap response did not include asset data');
@@ -166,65 +177,70 @@ class DataService extends EventEmitter {
   transformCoinMarketCapAssets(assets, timestamp) {
     return assets
       .map((asset, index) => {
-        const quotes = Array.isArray(asset?.quotes) ? asset.quotes : [];
-        const firstQuote = quotes[0];
-        const usdQuoteFromArray = quotes.find((quote) => {
-          const name = (quote?.name || quote?.symbol || quote?.currency || quote?.code || '').toUpperCase();
-          return name === 'USD';
-        });
-
-        const usdQuote =
-          usdQuoteFromArray ||
-          asset?.quote?.USD ||
-          asset?.quote?.Usd ||
-          asset?.quote?.usd ||
-          null;
+        const usdQuote = asset?.quote?.USD || asset?.quote?.Usd || asset?.quote?.usd || null;
 
         const priceUsd = parseFloatSafe(
-          usdQuote?.price ?? usdQuote?.quote ?? asset?.price ?? asset?.priceUsd ?? firstQuote?.price ?? 0,
+          usdQuote?.price ??
+            usdQuote?.quote ??
+            asset?.price ??
+            asset?.priceUsd ??
+            asset?.price_usd ??
+            asset?.usdPrice ??
+            0,
         );
 
         const supply = parseFloatSafe(
-          asset?.circulatingSupply ?? asset?.supply ?? usdQuote?.circulatingSupply ?? firstQuote?.circulatingSupply,
+          asset?.circulating_supply ??
+            asset?.circulatingSupply ??
+            asset?.supply ??
+            usdQuote?.circulatingSupply ??
+            usdQuote?.circulating_supply,
         );
 
         const maxSupply = parseFloatSafe(
-          asset?.maxSupply ?? asset?.totalSupply ?? usdQuote?.maxSupply ?? firstQuote?.maxSupply ?? asset?.sMaxSupply,
+          asset?.max_supply ??
+            asset?.maxSupply ??
+            asset?.total_supply ??
+            asset?.totalSupply ??
+            usdQuote?.maxSupply ??
+            usdQuote?.max_supply ??
+            asset?.sMaxSupply,
         );
 
         const marketCapUsd = parseFloatSafe(
-          usdQuote?.marketCap ??
-            usdQuote?.marketCapByTotalSupply ??
+          usdQuote?.market_cap ??
+            usdQuote?.marketCap ??
+            usdQuote?.market_cap_diluted ??
+            asset?.market_cap ??
             asset?.marketCap ??
             asset?.marketCapUsd ??
-            firstQuote?.marketCap,
+            asset?.market_cap_usd,
         );
 
         const volumeUsd24Hr = parseFloatSafe(
-          usdQuote?.volume24h ??
-            usdQuote?.volume24H ??
+          usdQuote?.volume_24h ??
+            usdQuote?.volume24h ??
             usdQuote?.volume ??
+            asset?.volume_24h ??
             asset?.volume24h ??
-            asset?.volume24H ??
-            firstQuote?.volume24h,
+            asset?.volume24H,
         );
 
         const changePercent24Hr = parseFloatSafe(
-          usdQuote?.percentChange24h ??
-            usdQuote?.percentChange24H ??
+          usdQuote?.percent_change_24h ??
+            usdQuote?.percentChange24h ??
             usdQuote?.change24h ??
+            asset?.percent_change_24h ??
             asset?.percentChange24h ??
-            asset?.percentChange24H ??
             asset?.changePercent24h,
         );
 
         const vwap24HrRaw = parseFloatSafe(
-          usdQuote?.vwap24h ??
+          usdQuote?.vwap ??
+            usdQuote?.vwap24h ??
             usdQuote?.vwap24H ??
-            usdQuote?.vwap ??
             asset?.vwap24h ??
-            asset?.vwap24H ??
-            firstQuote?.vwap24h,
+            asset?.vwap24H,
         );
         const vwap24Hr = vwap24HrRaw > 0 ? vwap24HrRaw : priceUsd;
 
@@ -236,7 +252,7 @@ class DataService extends EventEmitter {
         const baseAsset = asset?.symbol;
         const idSource = asset?.slug || (baseAsset ? baseAsset.toLowerCase() : String(asset?.id ?? index + 1));
         const id = `${idSource}-usd`;
-        const rankValue = parseInt(asset?.cmcRank ?? asset?.rank ?? index + 1, 10);
+        const rankValue = parseInt(asset?.cmc_rank ?? asset?.cmcRank ?? asset?.rank ?? index + 1, 10);
         const rank = Number.isFinite(rankValue) ? rankValue : index + 1;
 
         return {
