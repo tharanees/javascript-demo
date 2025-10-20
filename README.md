@@ -4,7 +4,7 @@ This project demonstrates a full-stack JavaScript application that streams and v
 
 ## Features
 
-- **Public dataset integration** – streams CoinCap.io market data for ~200 crypto assets when available.
+- **Public dataset integration** – streams Binance market data for ~200 spot pairs when available.
 - **Offline resilience** – automatically falls back to a bundled CoinCap snapshot with synthetic drifts when outbound network access is blocked.
 - **GraphQL API** – rich query surface for market summaries, movers, distributions, dominance and more.
 - **WebSocket updates** – pushes live asset snapshots to all connected clients for real-time interactivity.
@@ -62,7 +62,7 @@ This project demonstrates a full-stack JavaScript application that streams and v
 
 Clients subscribing to `ws://localhost:4000/ws` receive JSON messages:
 
-- `snapshot` – full asset array on connection with latest timestamp and current data source (`remote` or `synthetic`).
+- `snapshot` – full asset array on connection with latest timestamp and current data source (`binance` or `synthetic`).
 - `update` – refreshed asset array every fetch cycle (~15s) including the data source and whether a fallback was used.
 - `warning` – emitted when the service downgrades to the bundled snapshot because the live API is unavailable.
 
@@ -70,4 +70,4 @@ These payloads drive the real-time ticker and instant table updates on the dashb
 
 ## Dataset credit
 
-Data is sourced from the [CoinCap](https://coincap.io/) public API. A trimmed snapshot from the same dataset ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review CoinCap's terms of service before using the data in production environments.
+Live data is sourced from the [Binance](https://binance-docs.github.io/apidocs/spot/en/#public-rest-api) public API. A trimmed CoinCap snapshot ships in `backend/src/data/seedAssets.json` so the demo keeps working in offline or firewalled environments. Please review the respective data providers' terms of service before using the feeds in production environments.

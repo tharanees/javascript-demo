@@ -60,13 +60,27 @@ function getChangeDistribution() {
 
 function getDominance(limit = 6) {
   const assets = dataService.getAssets();
-  const topAssets = assets.slice(0, limit);
-  const totalMarketCap = topAssets.reduce((sum, asset) => sum + asset.marketCapUsd, 0);
+  const uniqueByBase = [];
+  const seen = new Set();
+
+  for (const asset of assets) {
+    const key = asset.baseAsset || asset.symbol;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    uniqueByBase.push(asset);
+    if (uniqueByBase.length >= limit) {
+      break;
+    }
+  }
+
+  const totalMarketCap = uniqueByBase.reduce((sum, asset) => sum + asset.marketCapUsd, 0);
   if (!totalMarketCap) {
     return [];
   }
 
-  return topAssets.map((asset) => ({
+  return uniqueByBase.map((asset) => ({
     assetId: asset.id,
     symbol: asset.symbol,
     dominancePercent: toFixedNumber((asset.marketCapUsd / totalMarketCap) * 100, 2),

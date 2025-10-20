@@ -3,11 +3,20 @@ import CardContent from '@mui/material/CardContent';
 import Typography from '@mui/material/Typography';
 import { PolarAngleAxis, RadialBar, RadialBarChart, ResponsiveContainer } from 'recharts';
 
+const percentFormatter = new Intl.NumberFormat('en-US', {
+  style: 'percent',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const numberFormatter = new Intl.NumberFormat('en-US');
+
 export function VelocityGauge({ metric }) {
-  const value = metric?.averageVelocityPercent ?? 0;
-  const data = [
-    { name: 'velocity', value: Math.min(value, 100), fill: 'url(#velocityGradient)' },
-  ];
+  const rawValue = metric?.averageVelocityPercent ?? 0;
+  const clampedValue = Math.max(0, Math.min(rawValue, 100));
+  const formattedValue = percentFormatter.format(rawValue / 100);
+  const sampleSizeLabel = numberFormatter.format(metric?.sampleSize ?? 0);
+  const data = [{ name: 'velocity', value: clampedValue, fill: 'url(#velocityGradient)' }];
 
   return (
     <Card sx={{ backgroundColor: 'rgba(15,23,42,0.6)', borderRadius: 3, border: '1px solid rgba(148,163,184,0.2)', height: '100%' }}>
@@ -18,7 +27,7 @@ export function VelocityGauge({ metric }) {
         <ResponsiveContainer width="100%" height="80%">
           <RadialBarChart innerRadius="70%" outerRadius="100%" data={data} startAngle={180} endAngle={0}>
             <PolarAngleAxis type="number" domain={[0, 100]} tick={false} />
-            <RadialBar dataKey="value" cornerRadius={16} />
+            <RadialBar dataKey="value" cornerRadius={16} background={{ fill: 'rgba(148,163,184,0.15)' }} />
             <defs>
               <linearGradient id="velocityGradient" x1="0" y1="0" x2="1" y2="1">
                 <stop offset="0%" stopColor="#10b981" />
@@ -28,10 +37,10 @@ export function VelocityGauge({ metric }) {
           </RadialBarChart>
         </ResponsiveContainer>
         <Typography variant="h3" fontWeight={700} textAlign="center">
-          {value.toFixed(2)}%
+          {formattedValue}
         </Typography>
         <Typography variant="caption" color="text.secondary" textAlign="center" display="block">
-          Based on {metric?.sampleSize ?? 0} asset velocity samples
+          Based on {sampleSizeLabel} asset velocity samples
         </Typography>
       </CardContent>
     </Card>

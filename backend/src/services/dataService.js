@@ -19,6 +19,8 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
     this.intervalHandle = null;
     this.dataSource = 'uninitialised';
+    this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USD'];
+    this.supportedQuoteAssets = new Set(this.quoteAssetPreference);
   }
 
   async start(intervalMs = 15000) {
@@ -48,19 +50,22 @@ class DataService extends EventEmitter {
     let usedFallback = false;
 
     try {
-      const response = await fetch('https://api.coincap.io/v2/assets?limit=200');
+      const response = await fetch(
+        'https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=true',
+      );
       if (!response.ok) {
-        throw new Error(`Failed to fetch assets: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to fetch Binance products: ${response.status} ${response.statusText}`);
       }
 
       const payload = await response.json();
-      assetPayload = Array.isArray(payload?.data) ? payload.data : [];
+      const products = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+      assetPayload = this.transformBinanceProducts(products, timestamp);
 
       if (!assetPayload.length) {
-        throw new Error('Received empty payload from upstream dataset');
+        throw new Error('Received empty payload from Binance product API');
       }
 
-      this.dataSource = 'remote';
+      this.dataSource = 'binance';
     } catch (error) {
       usedFallback = true;
       // eslint-disable-next-line no-console
@@ -71,8 +76,8 @@ class DataService extends EventEmitter {
     }
 
     if (assetPayload.length) {
-      assetPayload.forEach((asset) => {
-        const normalized = this.normalizeAsset(asset, timestamp);
+      assetPayload.forEach((asset, index) => {
+        const normalized = this.normalizeAsset({ ...asset, rank: asset.rank ?? index + 1 }, timestamp);
         this.assetMap.set(normalized.id, normalized);
         this.appendHistory(normalized.id, {
           timestamp,
@@ -87,6 +92,94 @@ class DataService extends EventEmitter {
     }
 
     this.isUpdating = false;
+  }
+
+  transformBinanceProducts(products, timestamp) {
+    const groupedByBase = new Map();
+
+    products.forEach((product) => {
+      const baseAsset = product?.b ?? product?.baseAsset;
+      const quoteAsset = product?.q ?? product?.quoteAsset;
+      if (!baseAsset || !quoteAsset || !this.supportedQuoteAssets.has(quoteAsset)) {
+        return;
+      }
+
+      const asset = this.buildAssetFromProduct(product, timestamp);
+      if (!asset) {
+        return;
+      }
+
+      const existing = groupedByBase.get(asset.baseAsset);
+      if (!existing) {
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
+        return;
+      }
+
+      const existingPriority = this.quoteAssetPreference.indexOf(existing.quoteAsset);
+      const currentPriority = this.quoteAssetPreference.indexOf(asset.quoteAsset);
+
+      if (currentPriority !== -1 && (existingPriority === -1 || currentPriority < existingPriority)) {
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
+        return;
+      }
+
+      if (currentPriority === existingPriority && asset.volumeUsd24Hr > existing.asset.volumeUsd24Hr) {
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
+      }
+    });
+
+    const enriched = Array.from(groupedByBase.values()).map(({ asset }) => asset);
+
+    enriched.sort((a, b) => {
+      const aMetric = a.marketCapUsd > 0 ? a.marketCapUsd : a.volumeUsd24Hr;
+      const bMetric = b.marketCapUsd > 0 ? b.marketCapUsd : b.volumeUsd24Hr;
+      return bMetric - aMetric;
+    });
+
+    return enriched.slice(0, 200).map((asset, index) => ({
+      ...asset,
+      rank: index + 1,
+    }));
+  }
+
+  buildAssetFromProduct(product, timestamp) {
+    const baseAsset = product?.b ?? product?.baseAsset;
+    const quoteAsset = product?.q ?? product?.quoteAsset;
+
+    const priceUsd = parseFloatSafe(product?.c ?? product?.closePrice);
+    const changePercent = parseFloatSafe(product?.P ?? product?.priceChangePercent);
+    const quoteVolume = parseFloatSafe(product?.qv ?? product?.quoteVolume ?? product?.q);
+    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? 0);
+    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply);
+    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply) || supply;
+
+    if (!priceUsd) {
+      return null;
+    }
+
+    const displayName = product?.an || product?.assetName || `${baseAsset}/${quoteAsset}`;
+    const marketCapFromSupply = supply > 0 ? priceUsd * supply : 0;
+    const marketCapUsd = marketCapFromSupply || parseFloatSafe(product?.marketCap) || quoteVolume;
+    const vwap24Hr = baseVolume > 0 && quoteVolume > 0 ? quoteVolume / baseVolume : priceUsd;
+    const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
+    const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
+
+    return {
+      id,
+      symbol: baseAsset,
+      name: displayName,
+      baseAsset,
+      quoteAsset,
+      supply,
+      maxSupply,
+      marketCapUsd,
+      volumeUsd24Hr: quoteVolume,
+      priceUsd,
+      changePercent24Hr: changePercent,
+      vwap24Hr,
+      explorer,
+      lastUpdated: timestamp,
+    };
   }
 
   buildSyntheticAssets(timestamp) {
@@ -114,6 +207,8 @@ class DataService extends EventEmitter {
         changePercent24Hr,
         vwap24Hr,
         lastUpdated: timestamp,
+        baseAsset: seed.symbol,
+        quoteAsset: 'USD',
       };
     });
   }
@@ -124,6 +219,8 @@ class DataService extends EventEmitter {
       rank: parseInt(asset.rank, 10),
       symbol: asset.symbol,
       name: asset.name,
+      baseAsset: asset.baseAsset,
+      quoteAsset: asset.quoteAsset,
       supply: parseFloatSafe(asset.supply),
       maxSupply: parseFloatSafe(asset.maxSupply),
       marketCapUsd: parseFloatSafe(asset.marketCapUsd),

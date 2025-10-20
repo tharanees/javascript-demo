@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@apollo/client';
 import CssBaseline from '@mui/material/CssBaseline';
 import Container from '@mui/material/Container';
@@ -49,12 +49,47 @@ export default function App() {
     }
   }, [live.status, refetch]);
 
-  const summary = data?.marketSummary;
+  const liveSummary = useMemo(() => {
+    if (!live.assets.length) {
+      return null;
+    }
+
+    const roundValue = (value, digits = 2) => {
+      const parsed = Number.parseFloat(value);
+      if (!Number.isFinite(parsed)) {
+        return 0;
+      }
+      return Number.parseFloat(parsed.toFixed(digits));
+    };
+
+    const totalMarketCap = live.assets.reduce((sum, asset) => sum + (Number(asset.marketCapUsd) || 0), 0);
+    const totalVolume = live.assets.reduce((sum, asset) => sum + (Number(asset.volumeUsd24Hr) || 0), 0);
+    const averageChange = live.assets.reduce((sum, asset) => sum + (Number(asset.changePercent24Hr) || 0), 0) /
+      live.assets.length;
+    const positiveChangeCount = live.assets.filter((asset) => Number(asset.changePercent24Hr) >= 0).length;
+
+    return {
+      totalMarketCapUsd: roundValue(totalMarketCap, 0),
+      totalVolumeUsd24Hr: roundValue(totalVolume, 0),
+      averageChangePercent24Hr: roundValue(averageChange, 2),
+      assetsTracked: live.assets.length,
+      positiveChangeCount,
+      negativeChangeCount: live.assets.length - positiveChangeCount,
+      lastUpdated: live.lastUpdated,
+      dataSource: live.source,
+    };
+  }, [live.assets, live.lastUpdated, live.source]);
+
+  const summary = liveSummary ?? data?.marketSummary;
   const movers = data?.topMovers;
   const distribution = data?.changeDistribution ?? [];
   const dominance = data?.dominance ?? [];
   const velocity = data?.velocity;
   const dataSource = summary?.dataSource ?? live.source;
+  const dataSourceDescription = {
+    binance: 'Binance live market data',
+    synthetic: 'Bundled offline snapshot with synthetic updates',
+  };
 
   return (
     <ThemeProvider theme={theme}>
@@ -70,7 +105,7 @@ export default function App() {
         <SummaryCards summary={summary} />
         {dataSource ? (
           <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
-            Data source: {dataSource === 'synthetic' ? 'Bundled offline snapshot with synthetic updates' : 'CoinCap live API'}
+            Data source: {dataSourceDescription[dataSource] ?? dataSource}
           </Typography>
         ) : null}
         <Grid container spacing={3} sx={{ mt: 1 }}>
@@ -108,7 +143,7 @@ export default function App() {
         </Grid>
         <Stack direction="row" justifyContent="flex-end" mt={4}>
           <Typography variant="caption" color="text.secondary">
-            Powered by CoinCap.io public dataset
+            Powered by Binance market data (with offline synthetic fallback)
           </Typography>
         </Stack>
       </Container>
