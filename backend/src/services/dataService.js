@@ -187,9 +187,13 @@ class DataService extends EventEmitter {
     const payload = await response.json();
 
     const status = payload?.status || payload?.data?.status;
-    if (status?.error_code) {
+    const errorCodeRaw = status?.error_code ?? status?.errorCode;
+    const errorCode =
+      typeof errorCodeRaw === 'string' ? Number.parseInt(errorCodeRaw, 10) : errorCodeRaw;
+
+    if (Number.isFinite(errorCode) ? errorCode !== 0 : Boolean(errorCode)) {
       throw new Error(
-        `CoinMarketCap error ${status.error_code}: ${status.error_message || 'Unknown error'} (${status.timestamp || 'unknown timestamp'})`,
+        `CoinMarketCap error ${errorCodeRaw}: ${status?.error_message || status?.errorMessage || 'Unknown error'} (${status?.timestamp || 'unknown timestamp'})`,
       );
     }
 
