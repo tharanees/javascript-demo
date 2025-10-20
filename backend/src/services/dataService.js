@@ -19,6 +19,9 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
     this.intervalHandle = null;
     this.dataSource = 'uninitialised';
+    this.exchangeInfo = new Map();
+    this.exchangeInfoLoaded = false;
+    this.supportedQuoteAssets = new Set(['USDT', 'BUSD', 'USDC', 'FDUSD', 'TUSD', 'USD']);
   }
 
   async start(intervalMs = 15000) {
@@ -48,19 +51,21 @@ class DataService extends EventEmitter {
     let usedFallback = false;
 
     try {
-      const response = await fetch('https://api.coincap.io/v2/assets?limit=200');
+      await this.ensureExchangeInfo();
+
+      const response = await fetch('https://api.binance.com/api/v3/ticker/24hr');
       if (!response.ok) {
-        throw new Error(`Failed to fetch assets: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to fetch Binance tickers: ${response.status} ${response.statusText}`);
       }
 
       const payload = await response.json();
-      assetPayload = Array.isArray(payload?.data) ? payload.data : [];
+      assetPayload = this.transformBinanceTickers(Array.isArray(payload) ? payload : [], timestamp);
 
       if (!assetPayload.length) {
-        throw new Error('Received empty payload from upstream dataset');
+        throw new Error('Received empty payload from Binance API');
       }
 
-      this.dataSource = 'remote';
+      this.dataSource = 'binance';
     } catch (error) {
       usedFallback = true;
       // eslint-disable-next-line no-console
@@ -71,8 +76,8 @@ class DataService extends EventEmitter {
     }
 
     if (assetPayload.length) {
-      assetPayload.forEach((asset) => {
-        const normalized = this.normalizeAsset(asset, timestamp);
+      assetPayload.forEach((asset, index) => {
+        const normalized = this.normalizeAsset({ ...asset, rank: asset.rank ?? index + 1 }, timestamp);
         this.assetMap.set(normalized.id, normalized);
         this.appendHistory(normalized.id, {
           timestamp,
@@ -87,6 +92,81 @@ class DataService extends EventEmitter {
     }
 
     this.isUpdating = false;
+  }
+
+  async ensureExchangeInfo() {
+    if (this.exchangeInfoLoaded && this.exchangeInfo.size > 0) {
+      return;
+    }
+
+    try {
+      const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch exchange info: ${response.status} ${response.statusText}`);
+      }
+
+      const payload = await response.json();
+      const symbols = Array.isArray(payload?.symbols) ? payload.symbols : [];
+
+      if (!symbols.length) {
+        throw new Error('Exchange info payload was empty');
+      }
+
+      this.exchangeInfo = new Map(symbols.map((symbol) => [symbol.symbol, symbol]));
+      this.exchangeInfoLoaded = true;
+    } catch (error) {
+      this.exchangeInfoLoaded = false;
+      throw error;
+    }
+  }
+
+  transformBinanceTickers(tickers, timestamp) {
+    const enriched = tickers
+      .map((ticker) => this.buildAssetFromTicker(ticker, timestamp))
+      .filter((asset) => asset !== null);
+
+    enriched.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
+
+    return enriched.slice(0, 200).map((asset, index) => ({
+      ...asset,
+      rank: index + 1,
+    }));
+  }
+
+  buildAssetFromTicker(ticker, timestamp) {
+    const meta = this.exchangeInfo.get(ticker.symbol);
+    if (!meta || !this.supportedQuoteAssets.has(meta.quoteAsset)) {
+      return null;
+    }
+
+    const baseAsset = meta.baseAsset;
+    const quoteAsset = meta.quoteAsset;
+
+    const priceUsd = parseFloatSafe(ticker.lastPrice);
+    const quoteVolume = parseFloatSafe(ticker.quoteVolume);
+    const changePercent = parseFloatSafe(ticker.priceChangePercent);
+    const vwap24Hr = parseFloatSafe(ticker.weightedAvgPrice);
+
+    if (!priceUsd || !quoteVolume) {
+      return null;
+    }
+
+    const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
+
+    return {
+      id,
+      symbol: baseAsset,
+      name: `${baseAsset}/${quoteAsset}`,
+      supply: 0,
+      maxSupply: 0,
+      marketCapUsd: quoteVolume,
+      volumeUsd24Hr: quoteVolume,
+      priceUsd,
+      changePercent24Hr: changePercent,
+      vwap24Hr,
+      explorer: '',
+      lastUpdated: timestamp,
+    };
   }
 
   buildSyntheticAssets(timestamp) {
