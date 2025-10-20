@@ -3,20 +3,6 @@ const EventEmitter = require('events');
 const fetch = (...args) => import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
 const seedAssets = require('../data/seedAssets.json');
 
-const seedMetadataBySymbol = seedAssets.reduce((map, asset) => {
-  if (asset?.symbol) {
-    map.set(asset.symbol.toUpperCase(), asset);
-  }
-  return map;
-}, new Map());
-
-const getSeedMetadata = (symbol) => {
-  if (!symbol) {
-    return null;
-  }
-  return seedMetadataBySymbol.get(symbol.toUpperCase()) ?? null;
-};
-
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
 
 const parseFloatSafe = (value) => {
@@ -33,8 +19,6 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
     this.intervalHandle = null;
     this.dataSource = 'uninitialised';
-    this.exchangeInfo = new Map();
-    this.exchangeInfoLoaded = false;
     this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USD'];
     this.supportedQuoteAssets = new Set(this.quoteAssetPreference);
   }
@@ -66,18 +50,19 @@ class DataService extends EventEmitter {
     let usedFallback = false;
 
     try {
-      await this.ensureExchangeInfo();
-
-      const response = await fetch('https://api.binance.com/api/v3/ticker/24hr');
+      const response = await fetch(
+        'https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=true',
+      );
       if (!response.ok) {
-        throw new Error(`Failed to fetch Binance tickers: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to fetch Binance products: ${response.status} ${response.statusText}`);
       }
 
       const payload = await response.json();
-      assetPayload = this.transformBinanceTickers(Array.isArray(payload) ? payload : [], timestamp);
+      const products = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+      assetPayload = this.transformBinanceProducts(products, timestamp);
 
       if (!assetPayload.length) {
-        throw new Error('Received empty payload from Binance API');
+        throw new Error('Received empty payload from Binance product API');
       }
 
       this.dataSource = 'binance';
@@ -109,68 +94,47 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
   }
 
-  async ensureExchangeInfo() {
-    if (this.exchangeInfoLoaded && this.exchangeInfo.size > 0) {
-      return;
-    }
-
-    try {
-      const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
-      if (!response.ok) {
-        throw new Error(`Failed to fetch exchange info: ${response.status} ${response.statusText}`);
-      }
-
-      const payload = await response.json();
-      const symbols = Array.isArray(payload?.symbols) ? payload.symbols : [];
-
-      if (!symbols.length) {
-        throw new Error('Exchange info payload was empty');
-      }
-
-      this.exchangeInfo = new Map(symbols.map((symbol) => [symbol.symbol, symbol]));
-      this.exchangeInfoLoaded = true;
-    } catch (error) {
-      this.exchangeInfoLoaded = false;
-      throw error;
-    }
-  }
-
-  transformBinanceTickers(tickers, timestamp) {
+  transformBinanceProducts(products, timestamp) {
     const groupedByBase = new Map();
 
-    tickers.forEach((ticker) => {
-      const meta = this.exchangeInfo.get(ticker.symbol);
-      if (!meta || !this.supportedQuoteAssets.has(meta.quoteAsset)) {
+    products.forEach((product) => {
+      const baseAsset = product?.b ?? product?.baseAsset;
+      const quoteAsset = product?.q ?? product?.quoteAsset;
+      if (!baseAsset || !quoteAsset || !this.supportedQuoteAssets.has(quoteAsset)) {
         return;
       }
 
-      const asset = this.buildAssetFromTicker(ticker, meta, timestamp);
+      const asset = this.buildAssetFromProduct(product, timestamp);
       if (!asset) {
         return;
       }
 
       const existing = groupedByBase.get(asset.baseAsset);
       if (!existing) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: meta.quoteAsset });
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
         return;
       }
 
       const existingPriority = this.quoteAssetPreference.indexOf(existing.quoteAsset);
-      const currentPriority = this.quoteAssetPreference.indexOf(meta.quoteAsset);
+      const currentPriority = this.quoteAssetPreference.indexOf(asset.quoteAsset);
 
       if (currentPriority !== -1 && (existingPriority === -1 || currentPriority < existingPriority)) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: meta.quoteAsset });
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
         return;
       }
 
       if (currentPriority === existingPriority && asset.volumeUsd24Hr > existing.asset.volumeUsd24Hr) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: meta.quoteAsset });
+        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
       }
     });
 
     const enriched = Array.from(groupedByBase.values()).map(({ asset }) => asset);
 
-    enriched.sort((a, b) => b.marketCapUsd - a.marketCapUsd);
+    enriched.sort((a, b) => {
+      const aMetric = a.marketCapUsd > 0 ? a.marketCapUsd : a.volumeUsd24Hr;
+      const bMetric = b.marketCapUsd > 0 ? b.marketCapUsd : b.volumeUsd24Hr;
+      return bMetric - aMetric;
+    });
 
     return enriched.slice(0, 200).map((asset, index) => ({
       ...asset,
@@ -178,28 +142,26 @@ class DataService extends EventEmitter {
     }));
   }
 
-  buildAssetFromTicker(ticker, meta, timestamp) {
-    const baseAsset = meta.baseAsset;
-    const quoteAsset = meta.quoteAsset;
+  buildAssetFromProduct(product, timestamp) {
+    const baseAsset = product?.b ?? product?.baseAsset;
+    const quoteAsset = product?.q ?? product?.quoteAsset;
 
-    const priceUsd = parseFloatSafe(ticker.lastPrice);
-    const quoteVolume = parseFloatSafe(ticker.quoteVolume);
-    const baseVolume = parseFloatSafe(ticker.volume);
-    const changePercent = parseFloatSafe(ticker.priceChangePercent);
-    const vwap24Hr = parseFloatSafe(ticker.weightedAvgPrice);
+    const priceUsd = parseFloatSafe(product?.c ?? product?.closePrice);
+    const changePercent = parseFloatSafe(product?.P ?? product?.priceChangePercent);
+    const quoteVolume = parseFloatSafe(product?.qv ?? product?.quoteVolume ?? product?.q);
+    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? 0);
+    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply);
+    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply) || supply;
 
-    if (!priceUsd || !quoteVolume) {
+    if (!priceUsd) {
       return null;
     }
 
-    const metadata = getSeedMetadata(baseAsset);
-    const baselineSupply = parseFloatSafe(metadata?.supply);
-    const fallbackSupply = baseVolume || (priceUsd ? quoteVolume / priceUsd : 0);
-    const supply = baselineSupply > 0 ? baselineSupply : fallbackSupply;
-    const maxSupply = parseFloatSafe(metadata?.maxSupply) || supply;
-    const displayName = metadata?.name || `${baseAsset}/${quoteAsset}`;
-    const explorer = metadata?.explorer || `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
-    const marketCapUsd = supply > 0 ? priceUsd * supply : quoteVolume;
+    const displayName = product?.an || product?.assetName || `${baseAsset}/${quoteAsset}`;
+    const marketCapFromSupply = supply > 0 ? priceUsd * supply : 0;
+    const marketCapUsd = marketCapFromSupply || parseFloatSafe(product?.marketCap) || quoteVolume;
+    const vwap24Hr = baseVolume > 0 && quoteVolume > 0 ? quoteVolume / baseVolume : priceUsd;
+    const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
     const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
 
     return {
