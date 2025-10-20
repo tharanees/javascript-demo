@@ -41,31 +41,5 @@ export const DASHBOARD_QUERY = gql`
       symbol
       dominancePercent
     }
-    velocity {
-      averageVelocityPercent
-      sampleSize
-    }
-  }
-`;
-
-export const ASSETS_TABLE_QUERY = gql`
-  query AssetsTable($limit: Int!, $offset: Int!) {
-    assets(limit: $limit, offset: $offset) {
-      id
-      rank
-      symbol
-      name
-      priceUsd
-      changePercent24Hr
-      marketCapUsd
-      volumeUsd24Hr
-      supply
-      maxSupply
-      vwap24Hr
-      history {
-        timestamp
-        priceUsd
-      }
-    }
   }
 `;

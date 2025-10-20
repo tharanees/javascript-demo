@@ -24,13 +24,12 @@ export function Header({ status, lastUpdated, dataSource, warning }) {
   }[status] || 'default';
 
   const sourceLabel = {
-    binance: 'Binance live API',
-    remote: 'CoinCap live API',
+    coinmarketcap: 'CoinMarketCap live API',
     synthetic: 'Bundled snapshot (fallback)',
     uninitialised: 'initialising',
   }[dataSource] || 'N/A';
 
-  const sourceColor = dataSource === 'synthetic' ? 'warning' : dataSource === 'binance' ? 'success' : 'default';
+  const sourceColor = dataSource === 'synthetic' ? 'warning' : dataSource === 'coinmarketcap' ? 'success' : 'default';
 
   return (
     <AppBar position="sticky" color="transparent" elevation={0} sx={{ backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(148,163,184,0.2)' }}>

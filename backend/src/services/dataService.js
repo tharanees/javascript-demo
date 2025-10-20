@@ -1,13 +1,126 @@
 const EventEmitter = require('events');
 
-const fetch = (...args) => import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
+const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+let cachedFetch = null;
+let fetchInitialised = false;
+
+const resolveFetch = async () => {
+  if (fetchInitialised) {
+    return cachedFetch;
+  }
+
+  fetchInitialised = true;
+
+  if (typeof globalThis.fetch === 'function' && !proxyUrl) {
+    cachedFetch = globalThis.fetch.bind(globalThis);
+    return cachedFetch;
+  }
+
+  try {
+    const { default: fetchFn } = await import('node-fetch');
+
+    if (!proxyUrl) {
+      cachedFetch = fetchFn;
+      return cachedFetch;
+    }
+
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    const agent = new HttpsProxyAgent(proxyUrl);
+    cachedFetch = (url, options = {}) => fetchFn(url, { ...options, agent });
+    return cachedFetch;
+  } catch (error) {
+    if (typeof globalThis.fetch === 'function') {
+      // eslint-disable-next-line no-console
+      console.warn(`[dataService] node-fetch unavailable, falling back to global fetch: ${error.message}`);
+      cachedFetch = globalThis.fetch.bind(globalThis);
+      return cachedFetch;
+    }
+
+    throw error;
+  }
+};
+
+const fetch = (...args) => resolveFetch().then((impl) => impl(...args));
 const seedAssets = require('../data/seedAssets.json');
+
+const MAX_HISTORY_POINTS = 288;
 
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
 
-const parseFloatSafe = (value) => {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+const parseFloatStrict = (value) => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === 'string') {
+    const sanitized = value.replace(/,/g, '').trim();
+    if (!sanitized || sanitized === '--' || sanitized.toLowerCase() === 'n/a') {
+      return null;
+    }
+
+    const parsed = Number.parseFloat(sanitized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+};
+
+const parseFloatSafe = (value) => parseFloatStrict(value) ?? 0;
+
+const findUsdQuote = (asset) => {
+  if (!asset) {
+    return null;
+  }
+
+  const directUsdQuote = asset?.quote?.USD || asset?.quote?.Usd || asset?.quote?.usd;
+  if (directUsdQuote) {
+    return directUsdQuote;
+  }
+
+  if (Array.isArray(asset?.quotes)) {
+    return asset.quotes.find((entry) => {
+      const code = entry?.symbol || entry?.name || entry?.currency || entry?.currencyCode;
+      return code === 'USD';
+    });
+  }
+
+  return null;
+};
+
+const getValueFromPath = (source, path) => {
+  if (!source) {
+    return undefined;
+  }
+
+  return path.reduce((accumulator, key) => {
+    if (accumulator === null || accumulator === undefined) {
+      return undefined;
+    }
+    return accumulator[key];
+  }, source);
+};
+
+const pickNumeric = (sources, candidatePaths) => {
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+
+    for (const candidate of candidatePaths) {
+      const path = Array.isArray(candidate) ? candidate : [candidate];
+      const value = getValueFromPath(source, path);
+      const parsed = parseFloatStrict(value);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+  }
+
+  return 0;
 };
 
 class DataService extends EventEmitter {
@@ -19,8 +132,7 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
     this.intervalHandle = null;
     this.dataSource = 'uninitialised';
-    this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USD'];
-    this.supportedQuoteAssets = new Set(this.quoteAssetPreference);
+    this.maxAssets = 400;
   }
 
   async start(intervalMs = 15000) {
@@ -46,140 +158,164 @@ class DataService extends EventEmitter {
     this.isUpdating = true;
 
     const timestamp = Date.now();
-    let assetPayload = [];
-    let usedFallback = false;
 
     try {
-      const response = await fetch(
-        'https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=true',
-      );
-      if (!response.ok) {
-        throw new Error(`Failed to fetch Binance products: ${response.status} ${response.statusText}`);
+      const coinMarketCapAssets = await this.fetchCoinMarketCapAssets();
+      const transformed = this.transformCoinMarketCapAssets(coinMarketCapAssets, timestamp);
+
+      if (!transformed.length) {
+        throw new Error('CoinMarketCap returned an empty dataset');
       }
 
-      const payload = await response.json();
-      const products = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
-      assetPayload = this.transformBinanceProducts(products, timestamp);
-
-      if (!assetPayload.length) {
-        throw new Error('Received empty payload from Binance product API');
-      }
-
-      this.dataSource = 'binance';
-    } catch (error) {
-      usedFallback = true;
+      this.ingestAssets(transformed, timestamp, 'coinmarketcap', false);
+    } catch (coinMarketCapError) {
+      const errorMessage = coinMarketCapError.message;
       // eslint-disable-next-line no-console
-      console.warn(`[dataService] Falling back to bundled dataset: ${error.message}`);
-      assetPayload = this.buildSyntheticAssets(timestamp);
-      this.dataSource = 'synthetic';
-      this.emit('fallback', { message: error.message });
+      console.warn(`[dataService] Falling back to bundled dataset: ${errorMessage}`);
+
+      const syntheticAssets = this.buildSyntheticAssets(timestamp);
+      this.emit('fallback', { message: errorMessage });
+      this.ingestAssets(syntheticAssets, timestamp, 'synthetic', true);
+    } finally {
+      this.isUpdating = false;
     }
-
-    if (assetPayload.length) {
-      assetPayload.forEach((asset, index) => {
-        const normalized = this.normalizeAsset({ ...asset, rank: asset.rank ?? index + 1 }, timestamp);
-        this.assetMap.set(normalized.id, normalized);
-        this.appendHistory(normalized.id, {
-          timestamp,
-          priceUsd: normalized.priceUsd,
-          volumeUsd24Hr: normalized.volumeUsd24Hr,
-          changePercent24Hr: normalized.changePercent24Hr,
-        });
-      });
-
-      this.lastUpdated = timestamp;
-      this.emit('assets-updated', { assets: this.getAssets(), source: this.dataSource, usedFallback });
-    }
-
-    this.isUpdating = false;
   }
 
-  transformBinanceProducts(products, timestamp) {
-    const groupedByBase = new Map();
-
-    products.forEach((product) => {
-      const baseAsset = product?.b ?? product?.baseAsset;
-      const quoteAsset = product?.q ?? product?.quoteAsset;
-      if (!baseAsset || !quoteAsset || !this.supportedQuoteAssets.has(quoteAsset)) {
-        return;
-      }
-
-      const asset = this.buildAssetFromProduct(product, timestamp);
-      if (!asset) {
-        return;
-      }
-
-      const existing = groupedByBase.get(asset.baseAsset);
-      if (!existing) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
-        return;
-      }
-
-      const existingPriority = this.quoteAssetPreference.indexOf(existing.quoteAsset);
-      const currentPriority = this.quoteAssetPreference.indexOf(asset.quoteAsset);
-
-      if (currentPriority !== -1 && (existingPriority === -1 || currentPriority < existingPriority)) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
-        return;
-      }
-
-      if (currentPriority === existingPriority && asset.volumeUsd24Hr > existing.asset.volumeUsd24Hr) {
-        groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
-      }
-    });
-
-    const enriched = Array.from(groupedByBase.values()).map(({ asset }) => asset);
-
-    enriched.sort((a, b) => {
-      const aMetric = a.marketCapUsd > 0 ? a.marketCapUsd : a.volumeUsd24Hr;
-      const bMetric = b.marketCapUsd > 0 ? b.marketCapUsd : b.volumeUsd24Hr;
-      return bMetric - aMetric;
-    });
-
-    return enriched.slice(0, 200).map((asset, index) => ({
-      ...asset,
-      rank: index + 1,
-    }));
-  }
-
-  buildAssetFromProduct(product, timestamp) {
-    const baseAsset = product?.b ?? product?.baseAsset;
-    const quoteAsset = product?.q ?? product?.quoteAsset;
-
-    const priceUsd = parseFloatSafe(product?.c ?? product?.closePrice);
-    const changePercent = parseFloatSafe(product?.P ?? product?.priceChangePercent);
-    const quoteVolume = parseFloatSafe(product?.qv ?? product?.quoteVolume ?? product?.q);
-    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? 0);
-    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply);
-    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply) || supply;
-
-    if (!priceUsd) {
-      return null;
-    }
-
-    const displayName = product?.an || product?.assetName || `${baseAsset}/${quoteAsset}`;
-    const marketCapFromSupply = supply > 0 ? priceUsd * supply : 0;
-    const marketCapUsd = marketCapFromSupply || parseFloatSafe(product?.marketCap) || quoteVolume;
-    const vwap24Hr = baseVolume > 0 && quoteVolume > 0 ? quoteVolume / baseVolume : priceUsd;
-    const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
-    const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
-
-    return {
-      id,
-      symbol: baseAsset,
-      name: displayName,
-      baseAsset,
-      quoteAsset,
-      supply,
-      maxSupply,
-      marketCapUsd,
-      volumeUsd24Hr: quoteVolume,
-      priceUsd,
-      changePercent24Hr: changePercent,
-      vwap24Hr,
-      explorer,
-      lastUpdated: timestamp,
+  async fetchCoinMarketCapAssets() {
+    const limit = Math.min(this.maxAssets, 500);
+    const params = new URLSearchParams({ start: '1', limit: String(limit), convert: 'USD' });
+    const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/listing?${params.toString()}`;
+    const headers = {
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      Origin: 'https://coinmarketcap.com',
+      Referer: 'https://coinmarketcap.com/',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     };
+
+    const response = await fetch(url, { headers });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch CoinMarketCap assets: ${response.status} ${response.statusText}`);
+    }
+
+    const payload = await response.json();
+
+    const status = payload?.status || payload?.data?.status;
+    const errorCodeRaw = status?.error_code ?? status?.errorCode;
+    const errorCode =
+      typeof errorCodeRaw === 'string' ? Number.parseInt(errorCodeRaw, 10) : errorCodeRaw;
+
+    if (Number.isFinite(errorCode) ? errorCode !== 0 : Boolean(errorCode)) {
+      throw new Error(
+        `CoinMarketCap error ${errorCodeRaw}: ${status?.error_message || status?.errorMessage || 'Unknown error'} (${status?.timestamp || 'unknown timestamp'})`,
+      );
+    }
+
+    const assets = Array.isArray(payload?.data?.cryptoCurrencyList) ? payload.data.cryptoCurrencyList : [];
+
+    if (!assets.length) {
+      throw new Error('CoinMarketCap response did not include asset data');
+    }
+
+    return assets;
+  }
+
+  transformCoinMarketCapAssets(assets, timestamp) {
+    return assets
+      .map((asset, index) => {
+        const usdQuote = findUsdQuote(asset);
+        const priceUsd = pickNumeric([usdQuote, asset], [
+          ['price'],
+          ['quote'],
+          ['priceUsd'],
+          ['price_usd'],
+          ['lastPrice'],
+        ]);
+
+        const supply = pickNumeric([asset, usdQuote], [
+          ['circulating_supply'],
+          ['circulatingSupply'],
+          ['supply'],
+        ]);
+
+        const maxSupply = pickNumeric([asset, usdQuote], [
+          ['max_supply'],
+          ['maxSupply'],
+          ['total_supply'],
+          ['totalSupply'],
+        ]);
+
+        const marketCapUsd = pickNumeric([usdQuote, asset], [
+          ['market_cap'],
+          ['marketCap'],
+          ['market_cap_diluted'],
+          ['marketCapUsd'],
+          ['market_cap_usd'],
+        ]);
+
+        const volumeUsd24Hr = pickNumeric([usdQuote, asset], [
+          ['volume_24h'],
+          ['volume24h'],
+          ['volume24H'],
+          ['volume'],
+          ['volumeUsd24Hr'],
+          ['volume_24H'],
+        ]);
+
+        const changePercent24Hr = pickNumeric([usdQuote, asset], [
+          ['percent_change_24h'],
+          ['percentChange24h'],
+          ['change24h'],
+          ['percentChange24H'],
+          ['changePercent24h'],
+          ['changePercent24Hr'],
+        ]);
+
+        const vwap24HrRaw = pickNumeric([usdQuote, asset], [
+          ['vwap'],
+          ['vwap24h'],
+          ['vwap24H'],
+        ]);
+        const vwap24Hr = vwap24HrRaw > 0 ? vwap24HrRaw : priceUsd;
+
+        const explorerFromUrls = [asset?.urls?.explorer, asset?.urls?.website]
+          .filter(Array.isArray)
+          .flat()
+          .find((entry) => typeof entry === 'string' && entry.trim().length > 0);
+
+        const explorer =
+          explorerFromUrls || (asset?.slug ? `https://coinmarketcap.com/currencies/${asset.slug}/` : undefined);
+
+        const baseAsset = asset?.symbol;
+        const idSource = asset?.slug || (baseAsset ? baseAsset.toLowerCase() : String(asset?.id ?? index + 1));
+        const id = `${idSource}-usd`;
+        const rankCandidate = Number.parseInt(asset?.cmc_rank ?? asset?.cmcRank ?? asset?.rank, 10);
+        const rank = Number.isFinite(rankCandidate) ? rankCandidate : index + 1;
+
+        return {
+          id,
+          symbol: baseAsset,
+          name: asset?.name ?? baseAsset,
+          baseAsset,
+          quoteAsset: 'USD',
+          supply,
+          maxSupply,
+          marketCapUsd,
+          volumeUsd24Hr,
+          priceUsd,
+          changePercent24Hr,
+          vwap24Hr,
+          explorer,
+          lastUpdated: timestamp,
+          rank,
+        };
+      })
+      .filter((asset) => asset?.symbol && asset.priceUsd > 0)
+      .slice(0, this.maxAssets);
   }
 
   buildSyntheticAssets(timestamp) {
@@ -213,10 +349,37 @@ class DataService extends EventEmitter {
     });
   }
 
+  ingestAssets(assets, timestamp, source, usedFallback) {
+    const nextMap = new Map();
+
+    assets.forEach((asset, index) => {
+      const rankValue = Number.parseInt(asset.rank, 10);
+      const normalizedRank = Number.isFinite(rankValue) ? rankValue : index + 1;
+      const normalized = this.normalizeAsset({ ...asset, rank: normalizedRank }, timestamp);
+      nextMap.set(normalized.id, normalized);
+      this.appendHistory(normalized.id, {
+        timestamp,
+        priceUsd: normalized.priceUsd,
+        volumeUsd24Hr: normalized.volumeUsd24Hr,
+        changePercent24Hr: normalized.changePercent24Hr,
+      });
+    });
+
+    this.assetMap = nextMap;
+    this.lastUpdated = timestamp;
+    this.dataSource = source;
+
+    this.emit('assets-updated', {
+      assets: this.getAssets(),
+      source: this.dataSource,
+      usedFallback,
+    });
+  }
+
   normalizeAsset(asset, timestamp) {
-    const normalized = {
+    return {
       id: asset.id,
-      rank: parseInt(asset.rank, 10),
+      rank: Number.parseInt(asset.rank, 10),
       symbol: asset.symbol,
       name: asset.name,
       baseAsset: asset.baseAsset,
@@ -231,14 +394,12 @@ class DataService extends EventEmitter {
       explorer: asset.explorer,
       lastUpdated: timestamp,
     };
-
-    return normalized;
   }
 
   appendHistory(id, point) {
     const history = this.assetHistory.get(id) || [];
     history.push(point);
-    if (history.length > 288) {
+    if (history.length > MAX_HISTORY_POINTS) {
       history.shift();
     }
     this.assetHistory.set(id, history);
