@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@apollo/client';
 import CssBaseline from '@mui/material/CssBaseline';
 import Container from '@mui/material/Container';
@@ -49,7 +49,38 @@ export default function App() {
     }
   }, [live.status, refetch]);
 
-  const summary = data?.marketSummary;
+  const liveSummary = useMemo(() => {
+    if (!live.assets.length) {
+      return null;
+    }
+
+    const roundValue = (value, digits = 2) => {
+      const parsed = Number.parseFloat(value);
+      if (!Number.isFinite(parsed)) {
+        return 0;
+      }
+      return Number.parseFloat(parsed.toFixed(digits));
+    };
+
+    const totalMarketCap = live.assets.reduce((sum, asset) => sum + (Number(asset.marketCapUsd) || 0), 0);
+    const totalVolume = live.assets.reduce((sum, asset) => sum + (Number(asset.volumeUsd24Hr) || 0), 0);
+    const averageChange = live.assets.reduce((sum, asset) => sum + (Number(asset.changePercent24Hr) || 0), 0) /
+      live.assets.length;
+    const positiveChangeCount = live.assets.filter((asset) => Number(asset.changePercent24Hr) >= 0).length;
+
+    return {
+      totalMarketCapUsd: roundValue(totalMarketCap, 0),
+      totalVolumeUsd24Hr: roundValue(totalVolume, 0),
+      averageChangePercent24Hr: roundValue(averageChange, 2),
+      assetsTracked: live.assets.length,
+      positiveChangeCount,
+      negativeChangeCount: live.assets.length - positiveChangeCount,
+      lastUpdated: live.lastUpdated,
+      dataSource: live.source,
+    };
+  }, [live.assets, live.lastUpdated, live.source]);
+
+  const summary = liveSummary ?? data?.marketSummary;
   const movers = data?.topMovers;
   const distribution = data?.changeDistribution ?? [];
   const dominance = data?.dominance ?? [];

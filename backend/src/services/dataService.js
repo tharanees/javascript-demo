@@ -3,6 +3,20 @@ const EventEmitter = require('events');
 const fetch = (...args) => import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
 const seedAssets = require('../data/seedAssets.json');
 
+const seedMetadataBySymbol = seedAssets.reduce((map, asset) => {
+  if (asset?.symbol) {
+    map.set(asset.symbol.toUpperCase(), asset);
+  }
+  return map;
+}, new Map());
+
+const getSeedMetadata = (symbol) => {
+  if (!symbol) {
+    return null;
+  }
+  return seedMetadataBySymbol.get(symbol.toUpperCase()) ?? null;
+};
+
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
 
 const parseFloatSafe = (value) => {
@@ -178,19 +192,25 @@ class DataService extends EventEmitter {
       return null;
     }
 
-    const circulatingEstimate = baseVolume || (priceUsd ? quoteVolume / priceUsd : 0);
+    const metadata = getSeedMetadata(baseAsset);
+    const baselineSupply = parseFloatSafe(metadata?.supply);
+    const fallbackSupply = baseVolume || (priceUsd ? quoteVolume / priceUsd : 0);
+    const supply = baselineSupply > 0 ? baselineSupply : fallbackSupply;
+    const maxSupply = parseFloatSafe(metadata?.maxSupply) || supply;
+    const displayName = metadata?.name || `${baseAsset}/${quoteAsset}`;
+    const explorer = metadata?.explorer || `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
+    const marketCapUsd = supply > 0 ? priceUsd * supply : quoteVolume;
     const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
-    const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
 
     return {
       id,
       symbol: baseAsset,
-      name: `${baseAsset}/${quoteAsset}`,
+      name: displayName,
       baseAsset,
       quoteAsset,
-      supply: circulatingEstimate,
-      maxSupply: circulatingEstimate,
-      marketCapUsd: quoteVolume,
+      supply,
+      maxSupply,
+      marketCapUsd,
       volumeUsd24Hr: quoteVolume,
       priceUsd,
       changePercent24Hr: changePercent,
