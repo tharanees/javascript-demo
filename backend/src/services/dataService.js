@@ -1,13 +1,45 @@
 const EventEmitter = require('events');
 
-const fetch = (...args) => import('node-fetch').then(({ default: fetchFn }) => fetchFn(...args));
+const fetch = async (...args) => {
+  if (typeof globalThis.fetch === 'function') {
+    return globalThis.fetch(...args);
+  }
+
+  const { default: fetchFn } = await import('node-fetch');
+  return fetchFn(...args);
+};
 const seedAssets = require('../data/seedAssets.json');
 
 const randomBetween = (min, max) => Math.random() * (max - min) + min;
 
 const parseFloatSafe = (value) => {
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+  if (value === null || value === undefined) {
+    return 0;
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  if (typeof value === 'string') {
+    const sanitized = value.replace(/,/g, '').trim();
+    if (!sanitized || sanitized === '--' || sanitized.toLowerCase() === 'n/a') {
+      return 0;
+    }
+
+    const parsed = Number.parseFloat(sanitized);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
+};
+
+const normalizeQuote = (quote) => {
+  if (typeof quote !== 'string') {
+    return quote;
+  }
+
+  return quote.replaceAll('Ⓢ', '').toUpperCase();
 };
 
 class DataService extends EventEmitter {
@@ -19,8 +51,10 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
     this.intervalHandle = null;
     this.dataSource = 'uninitialised';
-    this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USD'];
-    this.supportedQuoteAssets = new Set(this.quoteAssetPreference);
+    this.quoteAssetPreference = ['USDT', 'FDUSD', 'BUSD', 'USDC', 'TUSD', 'USDⓈ', 'USD'];
+    this.quoteAssetPreferenceNormalized = this.quoteAssetPreference.map(normalizeQuote);
+    this.supportedQuoteAssets = new Set(this.quoteAssetPreferenceNormalized);
+    this.maxAssets = 400;
   }
 
   async start(intervalMs = 15000) {
@@ -50,15 +84,7 @@ class DataService extends EventEmitter {
     let usedFallback = false;
 
     try {
-      const response = await fetch(
-        'https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=true',
-      );
-      if (!response.ok) {
-        throw new Error(`Failed to fetch Binance products: ${response.status} ${response.statusText}`);
-      }
-
-      const payload = await response.json();
-      const products = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+      const products = await this.fetchLiveProducts();
       assetPayload = this.transformBinanceProducts(products, timestamp);
 
       if (!assetPayload.length) {
@@ -94,12 +120,102 @@ class DataService extends EventEmitter {
     this.isUpdating = false;
   }
 
+  async fetchLiveProducts() {
+    const primaryUrl =
+      'https://www.binance.com/bapi/asset/v2/public/asset-service/product/get-products?includeEtf=true';
+
+    const tryPrimary = async () => {
+      const response = await fetch(primaryUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch Binance products: ${response.status} ${response.statusText}`);
+      }
+
+      const payload = await response.json();
+      const products = this.extractProducts(payload);
+      if (products.length) {
+        return products;
+      }
+
+      throw new Error('Primary Binance endpoint returned an empty dataset');
+    };
+
+    const tryPaginated = async () => {
+      const aggregated = [];
+      const pageSize = 500;
+      for (let page = 1; page <= 5; page += 1) {
+        const url = `https://www.binance.com/bapi/asset/v3/public/asset-service/product/list?page=${page}&rows=${pageSize}&includeEtf=true`;
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch Binance paginated products: ${response.status} ${response.statusText}`);
+        }
+
+        const payload = await response.json();
+        const products = this.extractProducts(payload);
+        if (!products.length) {
+          break;
+        }
+
+        aggregated.push(...products);
+
+        if (products.length < pageSize) {
+          break;
+        }
+      }
+
+      if (!aggregated.length) {
+        throw new Error('Paginated Binance endpoint returned an empty dataset');
+      }
+
+      return aggregated;
+    };
+
+    try {
+      return await tryPrimary();
+    } catch (primaryError) {
+      // eslint-disable-next-line no-console
+      console.warn(`[dataService] Primary Binance endpoint failed: ${primaryError.message}`);
+      return tryPaginated();
+    }
+  }
+
+  extractProducts(payload) {
+    if (!payload) {
+      return [];
+    }
+
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+
+    if (Array.isArray(payload?.data)) {
+      return payload.data;
+    }
+
+    if (Array.isArray(payload?.data?.list)) {
+      return payload.data.list;
+    }
+
+    if (Array.isArray(payload?.data?.rows)) {
+      return payload.data.rows;
+    }
+
+    if (Array.isArray(payload?.data?.products)) {
+      return payload.data.products;
+    }
+
+    if (Array.isArray(payload?.data?.data)) {
+      return payload.data.data;
+    }
+
+    return [];
+  }
+
   transformBinanceProducts(products, timestamp) {
     const groupedByBase = new Map();
 
     products.forEach((product) => {
-      const baseAsset = product?.b ?? product?.baseAsset;
-      const quoteAsset = product?.q ?? product?.quoteAsset;
+      const baseAsset = product?.b ?? product?.baseAsset ?? product?.symbol?.replace(/[^A-Z]/g, '');
+      const quoteAsset = normalizeQuote(product?.q ?? product?.quoteAsset ?? product?.quote ?? product?.quoteToken);
       if (!baseAsset || !quoteAsset || !this.supportedQuoteAssets.has(quoteAsset)) {
         return;
       }
@@ -115,8 +231,8 @@ class DataService extends EventEmitter {
         return;
       }
 
-      const existingPriority = this.quoteAssetPreference.indexOf(existing.quoteAsset);
-      const currentPriority = this.quoteAssetPreference.indexOf(asset.quoteAsset);
+      const existingPriority = this.quoteAssetPreferenceNormalized.indexOf(existing.quoteAsset);
+      const currentPriority = this.quoteAssetPreferenceNormalized.indexOf(asset.quoteAsset);
 
       if (currentPriority !== -1 && (existingPriority === -1 || currentPriority < existingPriority)) {
         groupedByBase.set(asset.baseAsset, { asset, quoteAsset: asset.quoteAsset });
@@ -136,22 +252,46 @@ class DataService extends EventEmitter {
       return bMetric - aMetric;
     });
 
-    return enriched.slice(0, 200).map((asset, index) => ({
+    return enriched.slice(0, this.maxAssets).map((asset, index) => ({
       ...asset,
       rank: index + 1,
     }));
   }
 
   buildAssetFromProduct(product, timestamp) {
-    const baseAsset = product?.b ?? product?.baseAsset;
-    const quoteAsset = product?.q ?? product?.quoteAsset;
+    const baseAsset = product?.b ?? product?.baseAsset ?? product?.base ?? product?.baseToken;
+    const quoteAsset = normalizeQuote(product?.q ?? product?.quoteAsset ?? product?.quote ?? product?.quoteToken);
 
-    const priceUsd = parseFloatSafe(product?.c ?? product?.closePrice);
-    const changePercent = parseFloatSafe(product?.P ?? product?.priceChangePercent);
-    const quoteVolume = parseFloatSafe(product?.qv ?? product?.quoteVolume ?? product?.q);
-    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? 0);
-    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply);
-    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply) || supply;
+    if (!baseAsset || !quoteAsset) {
+      return null;
+    }
+
+    const priceUsd = parseFloatSafe(
+      product?.c ??
+        product?.closePrice ??
+        product?.close ??
+        product?.price ??
+        product?.lastPrice ??
+        product?.priceUsd,
+    );
+    const changePercent = parseFloatSafe(
+      product?.P ??
+        product?.priceChangePercent ??
+        product?.priceChangeRate ??
+        product?.percentChange ??
+        product?.priceChange,
+    );
+    const quoteVolume = parseFloatSafe(
+      product?.qv ??
+        product?.quoteVolume ??
+        product?.volumeUsd ??
+        product?.turnover ??
+        product?.tradingVolume ??
+        0,
+    );
+    const baseVolume = parseFloatSafe(product?.v ?? product?.volume ?? product?.baseVolume ?? 0);
+    const supply = parseFloatSafe(product?.cs ?? product?.circulatingSupply ?? product?.supply);
+    const maxSupply = parseFloatSafe(product?.ms ?? product?.maxSupply ?? product?.totalSupply) || supply;
 
     if (!priceUsd) {
       return null;
@@ -159,7 +299,8 @@ class DataService extends EventEmitter {
 
     const displayName = product?.an || product?.assetName || `${baseAsset}/${quoteAsset}`;
     const marketCapFromSupply = supply > 0 ? priceUsd * supply : 0;
-    const marketCapUsd = marketCapFromSupply || parseFloatSafe(product?.marketCap) || quoteVolume;
+    const marketCapUsd =
+      marketCapFromSupply || parseFloatSafe(product?.marketCap ?? product?.marketCapUsd ?? product?.mc) || quoteVolume;
     const vwap24Hr = baseVolume > 0 && quoteVolume > 0 ? quoteVolume / baseVolume : priceUsd;
     const explorer = `https://www.binance.com/en/trade/${baseAsset}_${quoteAsset}`;
     const id = `${baseAsset.toLowerCase()}-${quoteAsset.toLowerCase()}`;
